@@ -26,6 +26,7 @@ impl Server {
 
         let app = axum::Router::new()
             .route("/", axum::routing::get(handler))
+            .route("/health", axum::routing::get(health_handler))
             .layer(RedirectMiddlewareLayer::new(redirect_config));
 
         Ok(Self { app, config })
@@ -49,14 +50,16 @@ async fn handler() -> impl IntoResponse {
     "You should not see this"
 }
 
+async fn health_handler() -> impl IntoResponse {
+    "OK"
+}
+
 #[cfg(test)]
 mod tests {
 
     use crate::{
         config::RedirectConfig,
-        server::test_helpers::{
-            create_test_app, init_test_tracing, spawn_backend_server, TestRequest,
-        },
+        server::test_helpers::{create_test_app, spawn_backend_server, TestRequest},
     };
 
     use axum::{body::Body, http::StatusCode, response::Response, Router};
@@ -90,8 +93,6 @@ mod tests {
 
             // Check status
             assert_eq!(response.status, test_req.expected_status);
-
-            println!("{:?}", response.response);
 
             for (key, value) in test_req.expected_headers.iter() {
                 response.assert_header(key, value);
