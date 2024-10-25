@@ -1,0 +1,32 @@
+[package]
+name = "redirector"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1.0", features = ["full"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "util"] }
+reqwest = { version = "0.12", features = ["json"] }
+tracing = { version = "0.1", features = ["log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
+bb8-redis = "0.17"
+redis = { version = "0.27", features = ["tokio-comp"] }
+uuid = { version = "1.4", features = ["v4"] }
+
+serde_yaml = "0.9"
+thiserror = "1.0"
+anyhow = { version = "1.0.91", features = ["backtrace"] }
+http-body-util = "0.1"
+bytes = "1.8.0"
+
+[dev-dependencies]
+lazy_static = "1.5.0"
+mockito = "1.5.0"
+tokio = { version = "1.0", features = ["full", "test-util"] }
+hyper = "1.0"

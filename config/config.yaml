@@ -1,0 +1,20 @@
+# config/config.yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+  request_timeout_seconds: 30
+
+redis:
+  url: "redis://redis:6379"
+  pool_size: 20
+  timeout_seconds: 5
+
+redirect:
+  max_redirects: 5
+  forward_headers: true
+  match_header: request_x-forwarded-server
+
+app:
+  account_id: "default"
+  max_redirects: 5
+  state_ttl_seconds: 300

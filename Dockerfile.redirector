@@ -1,0 +1,98 @@
+# Stage 1: Dependencies
+FROM rust:1.73-slim-bullseye AS deps
+
+WORKDIR /usr/src/redirect-handler
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy dependency files
+COPY Cargo.toml Cargo.lock ./
+
+# Create dummy main.rs to build dependencies
+RUN mkdir src && \
+    echo "fn main() {println!(\"dummy\")}" > src/main.rs
+
+# Build dependencies only
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/src/redirect-handler/target \
+    cargo build --release
+
+# Stage 2: Builder
+FROM rust:1.73-slim-bullseye AS builder
+
+WORKDIR /usr/src/redirect-handler
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the built dependencies
+COPY --from=deps /usr/local/cargo/registry /usr/local/cargo/registry
+COPY --from=deps /usr/src/redirect-handler/target target
+
+# Copy source code and config
+COPY . .
+
+# Build the application
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/src/redirect-handler/target \
+    cargo build --release
+
+# Stage 3: Runtime
+FROM debian:bullseye-slim AS runtime
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y \
+    ca-certificates \
+    libssl1.1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-root user
+RUN useradd -m -u 1000 -U -s /bin/sh -d /redirect redirect
+
+WORKDIR /redirect
+
+# Copy the built binary and config
+COPY --from=builder /usr/src/redirect-handler/target/release/redirect-handler .
+COPY --from=builder /usr/src/redirect-handler/config ./config
+
+# Set ownership
+RUN chown -R redirect:redirect /redirect
+
+USER redirect
+
+EXPOSE 8080
+EXPOSE 9090
+
+ENV CONFIG_PATH=/redirect/config/config.yaml
+ENV RUST_LOG=info
+
+HEALTHCHECK --interval=30s --timeout=3s \
+  CMD curl -f http://localhost:8080/health || exit 1
+
+CMD ["./redirect-handler"]
+
+# Stage 4: Development (optional)
+FROM builder AS development
+
+# Install development tools
+RUN rustup component add rustfmt clippy && \
+    cargo install cargo-watch
+
+# Set up development environment
+ENV RUST_LOG=debug
+ENV CONFIG_PATH=/usr/src/redirect-handler/config/config.yaml
+
+CMD ["cargo", "watch", "-x", "run"]
