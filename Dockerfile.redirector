@@ -1,98 +1,104 @@
-# Stage 1: Dependencies
-FROM rust:1.73-slim-bullseye AS deps
-
-WORKDIR /app
+# Builder stage
+FROM rust:1.75-slim-bullseye AS builder
 
 # Install build dependencies
 RUN apt-get update && \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
-    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files
+# Create a new empty shell project
+WORKDIR /app
+RUN cargo new --bin redirector
+WORKDIR /app/redirector
+
+# Copy manifests first to cache dependencies
 COPY Cargo.toml Cargo.lock ./
 
-# Create dummy main.rs to build dependencies
-RUN mkdir src && \
-    echo "fn main() {println!(\"dummy\")}" > src/main.rs
-
-# Build dependencies only
+# Build dependencies only (caching layer)
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    cargo build --release
+    --mount=type=cache,target=/app/redirector/target \
+    cargo build --release && \
+    rm src/*.rs
 
-# Stage 2: Builder
-FROM rust:1.73-slim-bullseye AS builder
+# Copy source code
+COPY src ./src/
 
-WORKDIR /app
+# Build the actual application
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/redirector/target \
+    cargo build --release && \
+    cp target/release/redirector /app/redirector-bin
 
-# Install build dependencies
+# Development stage
+# Development stage
+FROM rust:1.75-slim-bullseye AS development
+
+# Install development dependencies
 RUN apt-get update && \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && cargo install cargo-watch
 
-# Copy the built dependencies and registry
-COPY --from=deps /usr/local/cargo/registry /usr/local/cargo/registry
-COPY --from=deps /app/target target
+# Set up development directory
+WORKDIR /app
 
-# Copy source code and config
-COPY . .
+# Create a non-root user for development with proper cargo permissions
+RUN useradd -m -s /bin/bash developer && \
+    mkdir -p /usr/local/cargo/registry && \
+    chown -R developer:developer /app /usr/local/cargo
 
-# Build the application
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
-    cargo build --release
+# Set cargo home
+ENV CARGO_HOME=/usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup
 
-# Stage 3: Runtime
+# Give developer user ownership of cargo directories
+RUN chown -R developer:developer $CARGO_HOME $RUSTUP_HOME
+
+# Switch to non-root user
+USER developer
+
+# Copy manifest files
+COPY --chown=developer:developer Cargo.toml Cargo.lock ./
+
+# Set environment variables
+ENV RUST_LOG=debug
+ENV RUST_BACKTRACE=1
+
+# Expose the port the app runs on
+EXPOSE 3000
+
+# Start development server with hot reload
+CMD ["cargo", "watch", "-x", "run"]
+
+# Runtime stage
 FROM debian:bullseye-slim AS runtime
 
 # Install runtime dependencies
 RUN apt-get update && \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
     ca-certificates \
-    libssl1.1 \
-    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create a non-root user
-RUN useradd -m -u 1000 -U -s /bin/sh -d /redirect redirect
+# Copy the binary from builder
+COPY --from=builder /app/redirector-bin /usr/local/bin/redirector
 
-WORKDIR /redirect
-
-# Copy the built binary and config
-COPY --from=builder /app/target/release/redirector .
-COPY --from=builder /app/config ./config
-
-# Set ownership
-RUN chown -R redirect:redirect /redirect
-
-USER redirect
-
-EXPOSE 8080
-EXPOSE 9090
-
-ENV CONFIG_PATH=/redirect/config/config.yaml
+# Set environment variables
 ENV RUST_LOG=info
 
-HEALTHCHECK --interval=30s --timeout=3s \
-  CMD curl -f http://localhost:8080/health || exit 1
+# Create a non-root user
+RUN useradd -r -s /bin/false redirector
 
-CMD ["./redirector"]
+# Switch to non-root user
+USER redirector
 
-# Stage 4: Development (optional)
-FROM builder AS development
+# Expose the port the app runs on
+EXPOSE 3000
 
-# Install development tools
-RUN rustup component add rustfmt clippy && \
-    cargo install cargo-watch
-
-# Set up development environment
-ENV RUST_LOG=debug
-ENV CONFIG_PATH=/app/config/config.yaml
-
-CMD ["cargo", "watch", "-x", "run"]
+# Run the binary
+CMD ["redirector"]

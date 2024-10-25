@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  redirector-dev:
+    build:
+      context: .
+      target: development
+      dockerfile: Dockerfile.redirector
+    volumes:
+      - .:/app:cached
+      # Change the cargo cache permissions
+      - cargo-cache:/usr/local/cargo/registry:rw
+      - target-cache:/app/target:rw
+      - rust-tools:/usr/local/cargo/bin:rw
+    ports:
+      - "3000:3000"
+    environment:
+      - RUST_LOG=debug
+      - RUST_BACKTRACE=1
+      # Add cargo home environment variable
+      - CARGO_HOME=/usr/local/cargo
+    # Enable ptrace for debugger
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    # Keep container running for VS Code Dev Containers
+    command: sleep infinity
+    # Add container name for easier reference
+    container_name: redirector-dev
+    # Set user to avoid permission issues
+    user: developer
+    init: true
+    tty: true
+
+volumes:
+  cargo-cache:
+    name: redirector-cargo-cache
+  target-cache:
+    name: redirector-target-cache
+  rust-tools:
+    name: redirector-rust-tools

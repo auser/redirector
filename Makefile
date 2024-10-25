@@ -1,5 +1,18 @@
+IMAGE_TAG:=auser/redirector
+
+.PHONY: build_docker run_docker test_docker
+
 build_docker:
-	docker build -t auser/redirector -f Dockerfile.redirector .
+	docker buildx build -t ${IMAGE_TAG} -f Dockerfile.redirector .
 
 run_docker:
-	docker run -p 8080:8080 redirector
+	docker run --rm -p 3000:3000 ${IMAGE_TAG}
+
+# Add a test command to verify the container
+test_docker:
+	docker run -d --name redirector_test -p 3000:3000 ${IMAGE_TAG}
+	sleep 2  # Wait for server to start
+	curl -v http://localhost:3000/health
+	docker logs redirector_test
+	docker stop redirector_test
+	docker rm redirector_test

@@ -29,3 +29,22 @@ lazy_static = "1.5.0"
 mockito = "1.5.0"
 tokio = { version = "1.0", features = ["full", "test-util"] }
 hyper = "1.0"
+
+[profile.release]
+# Link time optimization gives better runtime performance
+lto = true
+# Enable full optimizations
+opt-level = 3
+# Strip debug symbols from the binary
+strip = true
+# Enable panic immediate abort instead of unwind (smaller binary)
+panic = "abort"
+# Parallel code generation units for faster compilation
+codegen-units = 1
+# Enables additional optimizations
+incremental = false
+
+[profile.dev]
+# Faster compilation for development
+opt-level = 0
+debug = true
