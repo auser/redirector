@@ -1,11 +1,11 @@
-use crate::{config::RedirectConfig, server::traefik_data::TraefikData};
+use crate::{config::RedirectConfig, metrics::Metrics, server::traefik_data::TraefikData};
 use ::tracing::info;
 use axum::{
     body::{Body, HttpBody},
     http::{header, HeaderMap, Request, Response, StatusCode},
 };
 use reqwest::Client;
-use std::{collections::HashSet, sync::Arc};
+use std::{collections::HashSet, sync::Arc, time::Instant};
 use tower::{Layer, Service};
 use tracing::{debug, error, instrument, warn};
 
@@ -16,11 +16,12 @@ pub struct RedirectMiddleware {
     config: Arc<RedirectConfig>,
     client: Arc<Client>,
     excluded_headers: Arc<HashSet<String>>,
+    metrics: Arc<Metrics>,
 }
 
 impl RedirectMiddleware {
-    #[instrument(skip(config))]
-    pub fn new(config: RedirectConfig) -> Self {
+    #[instrument(skip(config, metrics))]
+    pub fn new(config: RedirectConfig, metrics: Arc<Metrics>) -> Self {
         info!("RedirectMiddleware initialized");
 
         let max_redirects = config.max_redirects;
@@ -51,6 +52,7 @@ impl RedirectMiddleware {
             config: Arc::new(config),
             client: Arc::new(client),
             excluded_headers: Arc::new(excluded_headers),
+            metrics,
         }
     }
 
@@ -80,8 +82,54 @@ impl RedirectMiddleware {
         result
     }
 
-    #[instrument(skip(self, req), fields(request_id = %uuid::Uuid::new_v4()))]
     async fn handle_traefik_request(
+        &self,
+        req: Request<Body>,
+    ) -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync>> {
+        let start_time = Instant::now();
+        let headers = req.headers().clone();
+
+        // Record metrics at the end
+        let result = self.handle_traefik_request_inner(req).await;
+
+        let duration = start_time.elapsed().as_secs_f64();
+        self.metrics
+            .response_time
+            .with_label_values(&["redirect"])
+            .observe(duration);
+
+        match &result {
+            Ok(response) => {
+                self.metrics
+                    .redirect_counter
+                    .with_label_values(&[
+                        response.status().as_str(),
+                        headers
+                            .get("ServiceName")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("unknown"),
+                    ])
+                    .inc();
+            }
+            Err(_) => {
+                self.metrics
+                    .redirect_counter
+                    .with_label_values(&[
+                        "error",
+                        headers
+                            .get("ServiceName")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("unknown"),
+                    ])
+                    .inc();
+            }
+        }
+
+        result
+    }
+
+    #[instrument(skip(self, req), fields(request_id = %uuid::Uuid::new_v4()))]
+    async fn handle_traefik_request_inner(
         &self,
         req: Request<Body>,
     ) -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync>> {
@@ -211,9 +259,9 @@ pub struct RedirectMiddlewareLayer {
 }
 
 impl RedirectMiddlewareLayer {
-    pub fn new(config: RedirectConfig) -> Self {
+    pub fn new(config: RedirectConfig, metrics: Arc<Metrics>) -> Self {
         Self {
-            middleware: RedirectMiddleware::new(config),
+            middleware: RedirectMiddleware::new(config, metrics),
         }
     }
 }

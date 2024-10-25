@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use super::redirect::RedirectMiddlewareLayer;
 use ::tracing::info;
-use axum::response::IntoResponse;
+use axum::{response::IntoResponse, Router};
+use axum_prometheus::PrometheusMetricLayer;
 
-use crate::{config::Config, error::RedirectorResult, util};
+use crate::{config::Config, error::RedirectorResult, metrics::Metrics, util};
 
 pub fn create_server(config: Config) -> RedirectorResult<Server> {
     let server = Server::new(config)?;
@@ -24,10 +25,21 @@ impl Server {
         let config = Arc::new(config);
         let redirect_config = config.redirect.clone();
 
+        let metrics = Arc::new(Metrics::new());
+        let (prometheus_layer, metric_handle) = PrometheusMetricLayer::pair();
+
         let app = axum::Router::new()
             .route("/", axum::routing::get(handler))
             .route("/health", axum::routing::get(health_handler))
-            .layer(RedirectMiddlewareLayer::new(redirect_config));
+            .layer(prometheus_layer)
+            .layer(RedirectMiddlewareLayer::new(redirect_config, metrics));
+
+        let metrics_app = Router::new().route(
+            "/metrics",
+            axum::routing::get(move || async move { metric_handle.render() }),
+        );
+
+        let app = Router::new().merge(app).merge(metrics_app);
 
         Ok(Self { app, config })
     }
@@ -56,7 +68,6 @@ async fn health_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod tests {
-
     use crate::{
         config::RedirectConfig,
         server::test_helpers::{create_test_app, spawn_backend_server, TestRequest},

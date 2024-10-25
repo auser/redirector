@@ -1,6 +1,8 @@
 use crate::config::RedirectConfig;
+use crate::metrics::Metrics;
 use http_body_util::BodyExt;
 use std::str::FromStr;
+use std::sync::Arc;
 use std::{collections::HashMap, sync::Once};
 
 use axum::http::Request;
@@ -218,8 +220,9 @@ impl TestRequestBuilder {
 }
 
 pub fn create_test_app(redirect_config: RedirectConfig) -> Router {
+    let metrics = Arc::new(Metrics::new());
     Router::new()
-        .layer(RedirectMiddlewareLayer::new(redirect_config))
+        .layer(RedirectMiddlewareLayer::new(redirect_config, metrics))
         .route("/", get(|| async { "Hello, World!" }))
 }
 
