@@ -3,10 +3,10 @@ IMAGE_TAG:=auser/redirector
 .PHONY: build_docker run_docker test_docker
 
 build_docker:
-	docker buildx build -t ${IMAGE_TAG} -f Dockerfile.redirector .
+	docker buildx build -t ${IMAGE_TAG} -f Dockerfile .
 
 run_docker:
-	docker run --rm -p 3000:3000 ${IMAGE_TAG}
+	docker run --rm -p 3000:3001 ${IMAGE_TAG}
 
 # Add a test command to verify the container
 test_docker:
