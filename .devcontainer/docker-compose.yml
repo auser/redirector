@@ -28,8 +28,31 @@ services:
       # Auth service definition
       - "traefik.http.middlewares.redirector-auth.forwardauth.address=http://redirector-dev:3000"
       - "traefik.http.middlewares.redirector-auth.forwardauth.trustForwardHeader=true"
-      - "traefik.http.middlewares.redirector-headers.headers.customRequestHeaders.X-Forwarded-Server={request_X-Forwarded-Server}"
-      - "traefik.http.middlewares.redirector-headers.headers.customRequestHeaders.X-Forwarded-Host={request_Host}"
+      - "traefik.http.middlewares.redirector-headers.headers.customRequestHeaders.X-Forwarded-Server=traefik"
+
+    networks:
+      - traefik
+
+  etcd:
+    image: bitnami/etcd:latest
+    hostname: redirector-etcd
+    environment:
+      - ALLOW_NONE_AUTHENTICATION=yes
+      - ETCD_ADVERTISE_CLIENT_URLS=http://redirector-etcd:2379
+      - PROXY_DOMAIN=herringbank.com
+    ports:
+      - 2379:2379
+      - 2380:2380
+      - 4001:4001
+      - 7001:7001
+    healthcheck:
+      test: ["CMD", "/bin/sh", "-c", "/etcd-healthcheck.sh"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - etcd_data:/opt/bitnami/etcd/data
+      - ./ext/etcd-healthcheck.sh:/etcd-healthcheck.sh
     networks:
       - traefik
 
@@ -60,10 +83,13 @@ services:
       - "traefik.http.routers.main.rule=HostRegexp(`{subdomain:[a-z0-9-]+}.localhost`)"
       - "traefik.http.routers.main.entrypoints=web"
       - "traefik.http.routers.main.middlewares=add-forwarded-headers,redirector-auth"
-      - "traefik.http.services.main.loadbalancer.server.port=80"
+
       - "traefik.http.middlewares.add-forwarded-headers.headers.customrequestheaders.X-Forwarded-Server=traefik"
     networks:
       - traefik
+    depends_on:
+      etcd:
+        condition: service_healthy
 
   # Example backend service that returns redirects
   redirect-backend:
@@ -75,8 +101,9 @@ services:
       - "traefik.enable=true"
       - "traefik.http.routers.backend.rule=HostRegexp(`{subdomain:[a-z0-9-]+}.localhost`)"
       - "traefik.http.services.backend.loadbalancer.server.port=80"
-      - "traefik.http.routers.backend.entrypoints=web"
-      - "traefik.http.routers.backend.middlewares=redirector-headers"
+      - "traefik.http.routers.backend.priority=1"  # Lower priority than main router
+      - "traefik.http.services.backend-service.loadbalancer.server.port=80"
+      # - "traefik.http.routers.backend.middlewares=redirector-headers"
     networks:
       - traefik
 
@@ -91,3 +118,5 @@ volumes:
     name: redirector-target-cache
   rust-tools:
     name: redirector-rust-tools
+  etcd_data:
+    name: redirector-etcd-data
