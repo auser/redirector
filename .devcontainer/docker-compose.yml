@@ -38,8 +38,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./ext/traefik.yaml:/etc/traefik/traefik.yaml:ro
-      - ./ext/traefik-conf/:/etc/traefik/conf.d/:ro
-
+      - ./ext/traefik-conf/:/etc/traefik/conf.d/
     networks:
       - traefik
 

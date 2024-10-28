@@ -7,8 +7,8 @@ http:
       entryPoints:
         - web
       middlewares:
-        - "add-forwarded-headers@file"
-        - "redirector-auth"  # Using internal since it's defined in static config
+        - "add-forwarded-headers"
+        - "redirector-auth"
       priority: 1
 
   services:
