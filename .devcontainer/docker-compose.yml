@@ -3,7 +3,7 @@ services:
     build:
       context: ..
       target: development
-      dockerfile: .devcontainer/Dockerfile.redirector
+      dockerfile: .devcontainer/Dockerfile
     volumes:
       - ..:/app:cached
       - cargo-cache:/usr/local/cargo/registry
@@ -20,6 +20,46 @@ services:
     command: /bin/sh -c "while sleep 1000; do :; done"
     init: true
     user: developer
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.redirector.rule=Host(`redirector.localhost`)"
+      - "traefik.http.services.redirector.loadbalancer.server.port=3000"
+      - "traefik.http.routers.redirector.entrypoints=web"
+
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    command:
+      # Docker configuration
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      # Enable dashboard
+      - "--api.dashboard=true"
+      - "--api.insecure=true"  # For development only
+      # Configure entrypoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      # Enable logs
+      - "--log.level=DEBUG"
+      - "--accesslog=true"
+    ports:
+      - "80:80"     # HTTP
+      - "443:443"   # HTTPS
+      - "8080:8080" # Dashboard
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      # Dashboard
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.entrypoints=web"
+    networks:
+      - traefik
+
+networks:
+  traefik:
+    name: traefik
 
 volumes:
   cargo-cache:
