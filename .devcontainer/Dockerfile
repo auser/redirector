@@ -2,14 +2,34 @@
 FROM rust:1.75-slim-bullseye AS development
 
 # Install development dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    pkg-config \
-    libssl-dev \
-    git \
-    curl \
-    sudo \
-    && rm -rf /var/lib/apt/lists/*
+RUN apt-get -y update -yq \
+    && apt-get install -y --no-install-recommends \
+        git \
+        curl \
+        wget \
+        ssh \
+        sudo \
+        jq \
+        build-essential \
+        protobuf-compiler \
+        musl-dev \
+        musl-tools \
+        musl \
+        apt-transport-https \
+        ca-certificates \
+        gnupg-agent \
+        gnupg \
+        software-properties-common \
+        postgresql-client \
+        npm \
+        nodejs \
+        zsh \
+        python3-pip \
+        pkg-config \
+    # Clean up
+    && apt-get autoremove -y \
+    && apt-get clean -y \
+    && rm -r /var/cache/* /var/lib/apt/lists/*
 
 # Set up development directory
 WORKDIR /app

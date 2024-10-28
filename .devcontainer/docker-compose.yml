@@ -5,7 +5,7 @@ services:
       target: development
       dockerfile: .devcontainer/Dockerfile
     volumes:
-      - ..:/app:cached
+      - .:/app:cached
       - cargo-cache:/usr/local/cargo/registry
       - target-cache:/app/target
       - rust-tools:/usr/local/cargo/bin
@@ -13,43 +13,43 @@ services:
       - RUST_LOG=debug
       - RUST_BACKTRACE=1
       - CARGO_HOME=/usr/local/cargo
+      - BACKEND_URL=http://traefik-backend:80  # Point to Traefik backend
     cap_add:
       - SYS_PTRACE
     security_opt:
       - seccomp:unconfined
+    ports:
+      - "3000:3000"
     command: /bin/sh -c "while sleep 1000; do :; done"
     init: true
     user: developer
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.redirector.rule=Host(`redirector.localhost`)"
+      - "traefik.http.routers.redirector.rule=HostRegexp(`{subdomain:[a-z0-9-]+}.redirector.localhost`)"
       - "traefik.http.services.redirector.loadbalancer.server.port=3000"
       - "traefik.http.routers.redirector.entrypoints=web"
+    networks:
+      - traefik
+      - backend
 
-  traefik:
+  # Frontend Traefik - Handles incoming requests
+  traefik-frontend:
     image: traefik:v2.10
-    container_name: traefik
+    container_name: traefik-frontend
     command:
-      # Docker configuration
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
-      # Enable dashboard
       - "--api.dashboard=true"
-      - "--api.insecure=true"  # For development only
-      # Configure entrypoints
+      - "--api.insecure=true"
       - "--entrypoints.web.address=:80"
-      - "--entrypoints.websecure.address=:443"
-      # Enable logs
       - "--log.level=DEBUG"
       - "--accesslog=true"
     ports:
-      - "80:80"     # HTTP
-      - "443:443"   # HTTPS
-      - "8080:8080" # Dashboard
+      - "80:80"
+      - "8080:8080"  # Dashboard
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     labels:
-      # Dashboard
       - "traefik.enable=true"
       - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
       - "traefik.http.routers.dashboard.service=api@internal"
@@ -57,9 +57,44 @@ services:
     networks:
       - traefik
 
+  # Backend Traefik - Simulates your backend services
+  traefik-backend:
+    image: traefik:v2.10
+    container_name: traefik-backend
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--api.dashboard=true"
+      - "--api.insecure=true"
+      - "--entrypoints.web.address=:80"
+      - "--log.level=DEBUG"
+      - "--accesslog=true"
+    expose:
+      - "80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - backend
+
+  # Example backend service that returns redirects
+  redirect-backend:
+    image: nginx:alpine
+    container_name: redirect-backend
+    volumes:
+      - .devcontainer/nginx-redirect.conf:/etc/nginx/conf.d/default.conf:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.redirect-backend.rule=HostRegexp(`{subdomain:[a-z0-9-]+}.backend`)"
+      - "traefik.http.services.redirect-backend.loadbalancer.server.port=80"
+      - "traefik.http.routers.redirect-backend.entrypoints=web"
+    networks:
+      - backend
+
 networks:
   traefik:
     name: traefik
+  backend:
+    name: backend
 
 volumes:
   cargo-cache:
