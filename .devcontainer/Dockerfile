@@ -36,7 +36,7 @@ WORKDIR /app
 
 
 # Create a non-root user for development with proper cargo permissions
-RUN useradd -m -s /bin/bash developer && \
+RUN useradd -m -s /bin/zsh developer && \
 echo "developer ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
 mkdir -p /usr/local/cargo/registry && \
 mkdir -p /app/target && \
@@ -46,7 +46,7 @@ chown -R developer:developer /app /usr/local/cargo
 ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
 
-COPY ./.devcontainer/zshrc /home/developer/.zshrc
+COPY ./.devcontainer/ext/zshrc /home/developer/.zshrc
 
 # Switch to non-root user
 USER developer

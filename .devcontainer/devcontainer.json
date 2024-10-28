@@ -3,7 +3,6 @@
   "dockerComposeFile": "./docker-compose.yml",
   "service": "redirector-dev",
   "workspaceFolder": "/app",
-  "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind,consistency=cached",
   "features": {
     "ghcr.io/devcontainers/features/common-utils:2": {},
     "ghcr.io/devcontainers/features/rust:1": {

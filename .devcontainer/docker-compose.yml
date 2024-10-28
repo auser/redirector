@@ -5,7 +5,7 @@ services:
       target: development
       dockerfile: .devcontainer/Dockerfile
     volumes:
-      - .:/app:cached
+      - ../:/app:cached
       - cargo-cache:/usr/local/cargo/registry
       - target-cache:/app/target
       - rust-tools:/usr/local/cargo/bin
@@ -57,31 +57,12 @@ services:
     networks:
       - traefik
 
-  # Backend Traefik - Simulates your backend services
-  traefik-backend:
-    image: traefik:v2.10
-    container_name: traefik-backend
-    command:
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--api.dashboard=true"
-      - "--api.insecure=true"
-      - "--entrypoints.web.address=:80"
-      - "--log.level=DEBUG"
-      - "--accesslog=true"
-    expose:
-      - "80"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - backend
-
   # Example backend service that returns redirects
   redirect-backend:
     image: nginx:alpine
     container_name: redirect-backend
     volumes:
-      - .devcontainer/nginx-redirect.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./ext/nginx-redirect.conf:/etc/nginx/nginx.conf:ro
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.redirect-backend.rule=HostRegexp(`{subdomain:[a-z0-9-]+}.backend`)"
