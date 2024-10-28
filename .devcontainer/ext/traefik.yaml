@@ -1,18 +1,12 @@
+# traefik.yaml
 api:
-  dashboard: false
-  insecure: false
+  dashboard: true
+  insecure: true
   debug: true
 
 entryPoints:
   web:
     address: ":80"
-    http:
-      redirections:
-        entryPoint:
-          to: websecure
-          scheme: https
-  websecure:
-    address: ":443"
   metrics:
     address: ":8899"
 
@@ -50,64 +44,24 @@ metrics:
       - 1.2
       - 5.0
 
-# Provider Configuration
 providers:
   providersThrottleDuration: 2s
   docker:
     watch: true
     network: traefik
-    defaultRule: "Host(`{{ normalize .Name }}.localhost`)"
     exposedByDefault: false
   file:
+    directory: /etc/traefik/conf.d
     watch: true
-    filename: /etc/traefik/dynamic.yaml
 
-# HTTP Configuration
+# Global HTTP config
 http:
   middlewares:
     redirector-auth:
       forwardAuth:
-        address: "http://redirector-dev:3000/"
+        address: "http://redirector-dev:3000"
         trustForwardHeader: true
         authResponseHeaders:
           - "ServiceAddr"
           - "ServiceUrl"
-          - "X-Forwarded-Host"
-          - "X-Forwarded-Uri"
-          - "X-Forwarded-Method"
-          - "X-Forwarded-Proto"
-          - "X-Forwarded-For"
-    add-forwarded-headers:
-      headers:
-        customRequestHeaders:
-          X-Forwarded-Server: "traefik"
-
-  routers:
-    main:
-      rule: "HostRegexp(`{subdomain:[a-z0-9-]+}.localhost`)"
-      service: backend@docker
-      entryPoints:
-        - web
-        - websecure
-      middlewares:
-        - add-forwarded-headers
-        - redirector-auth
-      priority: 1
-      tls:
-        certResolver: default
-
-    dashboard:
-      rule: "Host(`traefik.localhost`)"
-      service: api@internal
-      entryPoints:
-        - web
-        - websecure
-      tls:
-        certResolver: default
-
-  services:
-    backend:
-      loadBalancer:
-        servers:
-          - url: "http://redirect-backend"
-        passHostHeader: true
+          - "X-Forwarded-*"

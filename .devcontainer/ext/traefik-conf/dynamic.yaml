@@ -1,0 +1,25 @@
+# dynamic.yaml
+http:
+  routers:
+    catchall:
+      rule: "HostRegexp(`{host:.+}`)"
+      service: backend
+      entryPoints:
+        - web
+      middlewares:
+        - "add-forwarded-headers@file"
+        - "redirector-auth"  # Using internal since it's defined in static config
+      priority: 1
+
+  services:
+    backend:
+      loadBalancer:
+        servers:
+          - url: "http://redirect-backend:80"
+        passHostHeader: true
+
+  middlewares:
+    add-forwarded-headers:
+      headers:
+        customRequestHeaders:
+          X-Forwarded-Server: "traefik"

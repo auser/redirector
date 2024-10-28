@@ -30,22 +30,16 @@ services:
   traefik-frontend:
     image: traefik:v2.10
     container_name: traefik-frontend
-    command:
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--api.dashboard=true"
-      - "--api.insecure=true"
-      - "--entrypoints.web.address=:80"
-      - "--log.level=DEBUG"
-      - "--accesslog=true"
-      - "--providers.docker.network=traefik"
     ports:
       - "80:80"
-      - "8080:8080"
+      - "443:443"
+      - "8080:8080"  # Dashboard port
+      - "8899:8899"  # Metrics
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./ext/traefik.yaml:/etc/traefik/traefik.yaml:ro
-      - ./ext/dynamic.yaml:/etc/traefik/dynamic.yaml:ro
+      - ./ext/traefik-conf/:/etc/traefik/conf.d/:ro
+
     networks:
       - traefik
 
