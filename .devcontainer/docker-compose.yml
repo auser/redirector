@@ -1,0 +1,30 @@
+services:
+  redirector-dev:
+    build:
+      context: ..
+      target: development
+      dockerfile: .devcontainer/Dockerfile.redirector
+    volumes:
+      - ..:/app:cached
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
+      - rust-tools:/usr/local/cargo/bin
+    environment:
+      - RUST_LOG=debug
+      - RUST_BACKTRACE=1
+      - CARGO_HOME=/usr/local/cargo
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
+    command: /bin/sh -c "while sleep 1000; do :; done"
+    init: true
+    user: developer
+
+volumes:
+  cargo-cache:
+    name: redirector-cargo-cache
+  target-cache:
+    name: redirector-target-cache
+  rust-tools:
+    name: redirector-rust-tools

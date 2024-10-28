@@ -1,17 +1,17 @@
 {
   "name": "Redirector Development",
-  "dockerComposeFile": "../docker-compose.yml",
+  "dockerComposeFile": "./docker-compose.yml",
   "service": "redirector-dev",
   "workspaceFolder": "/app",
-  // Features to install in the dev container
+  "workspaceMount": "source=${localWorkspaceFolder},target=/app,type=bind,consistency=cached",
   "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {},
     "ghcr.io/devcontainers/features/rust:1": {
       "version": "1.75",
       "profile": "default"
     },
     "ghcr.io/devcontainers/features/git:1": {}
   },
-  // Configure tool-specific properties
   "customizations": {
     "vscode": {
       "extensions": [
@@ -19,34 +19,19 @@
         "tamasfe.even-better-toml",
         "serayuzgur.crates",
         "vadimcn.vscode-lldb",
-        "ms-azuretools.vscode-docker",
-        "eamodio.gitlens"
+        "ms-azuretools.vscode-docker"
       ],
       "settings": {
         "editor.formatOnSave": true,
-        "rust-analyzer.checkOnSave.command": "clippy",
-        "rust-analyzer.checkOnSave.extraArgs": [
-          "--",
-          "-W",
-          "clippy::all"
-        ]
+        "rust-analyzer.checkOnSave.command": "clippy"
       }
     }
   },
-  // Use 'postCreateCommand' to run commands after the container is created
-  "postCreateCommand": "sudo chown -R developer:developer /usr/local/cargo && cargo install cargo-watch cargo-edit cargo-expand",
-  // Use the developer user
-  "remoteUser": "developer",
-  // Environment variables
-  "remoteEnv": {
-    "RUST_LOG": "debug",
-    "RUST_BACKTRACE": "1",
-    "CARGO_HOME": "/usr/local/cargo"
+  "initializeCommand": {
+    "Clean volumes": "docker volume rm redirector-cargo-cache redirector-target-cache redirector-rust-tools || true"
   },
-  // Mount points for cargo cache
-  "mounts": [
-    "source=redirector-cargo-cache,target=/usr/local/cargo/registry,type=volume",
-    "source=redirector-target-cache,target=/app/target,type=volume",
-    "source=redirector-rust-tools,target=/usr/local/cargo/bin,type=volume"
-  ]
+  "updateContentCommand": "cargo fetch",
+  "postCreateCommand": "sudo chown -R developer:developer /usr/local/cargo /app/target",
+  "remoteUser": "developer",
+  "shutdownAction": "stopCompose"
 }
