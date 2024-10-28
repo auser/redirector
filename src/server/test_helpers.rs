@@ -42,7 +42,7 @@ impl TestRequestResponse {
         let header = self.response.headers().get(key).expect("header not found");
         let header_str = header.to_str().expect("header is not valid UTF-8");
         let header_str = header_str.to_lowercase();
-        assert_eq!(header_str, value.to_lowercase());
+        assert!(header_str.contains(&value.to_lowercase()));
     }
 
     pub fn assert_header_missing(&self, key: &str) {

@@ -12,7 +12,7 @@ redis:
 redirect:
   max_redirects: 5
   forward_headers: true
-  match_header: request_x-forwarded-server
+  match_header: x-forwarded-server
 
 app:
   account_id: "default"

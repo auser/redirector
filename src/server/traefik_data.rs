@@ -10,9 +10,9 @@ pub struct TraefikData {
     pub origin_status: u16,
     #[serde(rename = "origin_Location")]
     pub location: Option<String>,
-    pub request_path: String,
-    pub request_scheme: String,
-    pub request_host: String,
+    pub request_path: Option<String>,
+    pub request_scheme: Option<String>,
+    pub request_host: Option<String>,
 }
 
 impl TryFrom<&HeaderMap> for TraefikData {
@@ -24,9 +24,9 @@ impl TryFrom<&HeaderMap> for TraefikData {
             service_url: headers.parse_header("ServiceURL")?,
             origin_status: headers.parse_header("OriginStatus")?,
             location: headers.parse_optional_header("origin_Location"),
-            request_path: headers.parse_header("RequestPath")?,
-            request_scheme: headers.parse_header("RequestScheme")?,
-            request_host: headers.parse_header("RequestHost")?,
+            request_path: headers.parse_optional_header("RequestPath"),
+            request_scheme: headers.parse_optional_header("RequestScheme"),
+            request_host: headers.parse_optional_header("RequestHost"),
         })
     }
 }

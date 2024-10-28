@@ -34,22 +34,27 @@ RUN apt-get -y update -yq \
 # Set up development directory
 WORKDIR /app
 
+COPY ./.devcontainer/ext/zshrc /home/developer/.zshrc
 
 # Create a non-root user for development with proper cargo permissions
-RUN useradd -m -s /bin/zsh developer && \
+RUN useradd -m -s /usr/bin/zsh developer && \
 echo "developer ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
 mkdir -p /usr/local/cargo/registry && \
 mkdir -p /app/target && \
-chown -R developer:developer /app /usr/local/cargo
+chown -R developer:developer /app /usr/local/cargo && \
+chown -R developer:developer /home/developer
+
 
 # Set cargo home
 ENV CARGO_HOME=/usr/local/cargo
 ENV RUSTUP_HOME=/usr/local/rustup
+ENV SHELL=/usr/bin/zsh
 
-COPY ./.devcontainer/ext/zshrc /home/developer/.zshrc
 
 # Switch to non-root user
 USER developer
+
+RUN cargo install cargo-watch
 
 # Keep container running
 CMD ["sleep", "infinity"]

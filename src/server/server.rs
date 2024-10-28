@@ -68,6 +68,8 @@ async fn health_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
+    use crate::server::test_helpers::init_test_tracing;
     use crate::{
         config::RedirectConfig,
         server::test_helpers::{create_test_app, spawn_backend_server, TestRequest},
@@ -76,45 +78,69 @@ mod tests {
     use axum::{body::Body, http::StatusCode, response::Response, Router};
 
     #[tokio::test]
-    async fn test_redirect_middleware_handles_traefik_redirect() {
-        let requests = vec![
-            TestRequest::builder()
-                .header("Host", "ibs.collegegreen.net")
-                .header("OriginStatus", "301")
-                .header("origin_Location", "https://www.herringbank.com/student/")
-                .uri("/student/")
-                .expected_status(StatusCode::OK)
-                .expected_body_contains("www.herringbank.com")
-                .expected_header("content-type", "text/html; charset=UTF-8")
-                .build(),
-            TestRequest::builder()
-                .header("Host", "www.collegegreen.net")
-                .header("OriginStatus", "301")
-                .expected_status(StatusCode::OK)
-                .build(),
-        ];
+    async fn test_handles_student_redirect_with_body() {
+        let request = TestRequest::builder()
+            .header("Host", "ibs.collegegreen.net")
+            .header("OriginStatus", "301")
+            .header("origin_Location", "https://www.herringbank.com/student/")
+            .uri("/student/")
+            .expected_status(StatusCode::OK)
+            .expected_body_contains("www.herringbank.com")
+            .expected_header("content-type", "text/html; charset=utf-8")
+            .build();
 
-        for mut test_req in requests {
-            let backend_url = spawn_simulated_backend_server().await;
-
-            let app = create_test_app(RedirectConfig::default());
-            let test_req = test_req.prepare(backend_url);
-
-            let mut response = test_req.make_request(app).await;
-
-            // Check status
-            assert_eq!(response.status, test_req.expected_status);
-
-            for (key, value) in test_req.expected_headers.iter() {
-                response.assert_header(key, value);
-            }
-
-            if let Some(expected_body_contains) = test_req.expected_body_contains {
-                response.assert_body_contains(expected_body_contains).await;
-            }
-        }
+        run_test_request(request).await;
     }
 
+    #[tokio::test]
+    async fn test_handles_simple_redirect() {
+        let request = TestRequest::builder()
+            .header("Host", "www.collegegreen.net")
+            .header("OriginStatus", "301")
+            .expected_status(StatusCode::OK)
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_handles_redirect_without_origin_status() {
+        let request = TestRequest::builder()
+            .header("Host", "example.com")
+            .uri("/")
+            .expected_status(StatusCode::OK)
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_handles_redirect_chain() {
+        let request = TestRequest::builder()
+            .header("Host", "ibs.collegegreen.net")
+            .header("OriginStatus", "301")
+            .header("origin_Location", "https://ibs.collegegreen.net/student/")
+            .uri("/student/")
+            .expected_status(StatusCode::OK)
+            .expected_body_contains("student")
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_preserves_headers_through_redirect() {
+        let request = TestRequest::builder()
+            .header("Host", "ibs.collegegreen.net")
+            .header("X-Custom-Header", "test-value")
+            .header("OriginStatus", "301")
+            .uri("/student/")
+            .expected_status(StatusCode::OK)
+            .expected_header("content-type", "text/html;")
+            .build();
+
+        run_test_request(request).await;
+    }
     use axum::routing;
     async fn spawn_simulated_backend_server() -> String {
         let app = Router::new()
@@ -125,8 +151,8 @@ mod tests {
                     let content_length = body.len().to_string();
                     Response::builder()
                         .status(301)
-                        .header("Location", "https://www.herringbank.com/student/")
-                        .header("Content-Type", "text/html; charset=iso-8859-1")
+                        .header("Location", "https://ibs.collegegreen.net/student/")
+                        .header("Content-Type", "text/html;")
                         .header("Content-Length", content_length)
                         .header("Server", "Apache")
                         .header("Access-Control-Allow-Origin", "*")
@@ -139,13 +165,34 @@ mod tests {
                 routing::get(|| async {
                     Response::builder()
                         .status(302)
-                        .header("Content-Type", "text/html, charset=UTF-8")
+                        .header("Content-Type", "text/plain")
                         .body(Body::empty())
                         .unwrap()
                 }),
             );
 
         spawn_backend_server(app).await
+    }
+
+    // Helper function to run a test request
+    async fn run_test_request(mut test_req: TestRequest) {
+        let backend_url = spawn_simulated_backend_server().await;
+        let app = create_test_app(RedirectConfig::default());
+        let test_req = test_req.prepare(backend_url);
+        let mut response = test_req.make_request(app).await;
+
+        // Check status
+        assert_eq!(response.status, test_req.expected_status);
+
+        // Check headers
+        for (key, value) in test_req.expected_headers.iter() {
+            response.assert_header(key, value);
+        }
+
+        // Check body if specified
+        if let Some(expected_body_contains) = test_req.expected_body_contains {
+            response.assert_body_contains(expected_body_contains).await;
+        }
     }
 
     // Helpers

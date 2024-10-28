@@ -6,6 +6,7 @@ services:
       dockerfile: .devcontainer/Dockerfile
     volumes:
       - ../:/app:cached
+      - ./ext/zshrc:/home/developer/.zshrc
       - cargo-cache:/usr/local/cargo/registry
       - target-cache:/app/target
       - rust-tools:/usr/local/cargo/bin
@@ -13,7 +14,6 @@ services:
       - RUST_LOG=debug
       - RUST_BACKTRACE=1
       - CARGO_HOME=/usr/local/cargo
-      - BACKEND_URL=http://traefik-backend:80  # Point to Traefik backend
     cap_add:
       - SYS_PTRACE
     security_opt:
@@ -25,14 +25,14 @@ services:
     user: developer
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.redirector.rule=HostRegexp(`{subdomain:[a-z0-9-]+}.redirector.localhost`)"
-      - "traefik.http.services.redirector.loadbalancer.server.port=3000"
-      - "traefik.http.routers.redirector.entrypoints=web"
+      # Auth service definition
+      - "traefik.http.middlewares.redirector-auth.forwardauth.address=http://redirector-dev:3000"
+      - "traefik.http.middlewares.redirector-auth.forwardauth.trustForwardHeader=true"
+      - "traefik.http.middlewares.redirector-headers.headers.customRequestHeaders.X-Forwarded-Server={request_X-Forwarded-Server}"
+      - "traefik.http.middlewares.redirector-headers.headers.customRequestHeaders.X-Forwarded-Host={request_Host}"
     networks:
       - traefik
-      - backend
 
-  # Frontend Traefik - Handles incoming requests
   traefik-frontend:
     image: traefik:v2.10
     container_name: traefik-frontend
@@ -44,16 +44,24 @@ services:
       - "--entrypoints.web.address=:80"
       - "--log.level=DEBUG"
       - "--accesslog=true"
+      - "--providers.docker.network=traefik"
     ports:
       - "80:80"
-      - "8080:8080"  # Dashboard
+      - "8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     labels:
       - "traefik.enable=true"
+      # Dashboard configuration
       - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
       - "traefik.http.routers.dashboard.service=api@internal"
       - "traefik.http.routers.dashboard.entrypoints=web"
+      # Main routing configuration
+      - "traefik.http.routers.main.rule=HostRegexp(`{subdomain:[a-z0-9-]+}.localhost`)"
+      - "traefik.http.routers.main.entrypoints=web"
+      - "traefik.http.routers.main.middlewares=add-forwarded-headers,redirector-auth"
+      - "traefik.http.services.main.loadbalancer.server.port=80"
+      - "traefik.http.middlewares.add-forwarded-headers.headers.customrequestheaders.X-Forwarded-Server=traefik"
     networks:
       - traefik
 
@@ -62,20 +70,19 @@ services:
     image: nginx:alpine
     container_name: redirect-backend
     volumes:
-      - ./ext/nginx-redirect.conf:/etc/nginx/nginx.conf:ro
+      - ./ext/nginx-redirect.conf:/etc/nginx/conf.d/backend.conf:ro
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.redirect-backend.rule=HostRegexp(`{subdomain:[a-z0-9-]+}.backend`)"
-      - "traefik.http.services.redirect-backend.loadbalancer.server.port=80"
-      - "traefik.http.routers.redirect-backend.entrypoints=web"
+      - "traefik.http.routers.backend.rule=HostRegexp(`{subdomain:[a-z0-9-]+}.localhost`)"
+      - "traefik.http.services.backend.loadbalancer.server.port=80"
+      - "traefik.http.routers.backend.entrypoints=web"
+      - "traefik.http.routers.backend.middlewares=redirector-headers"
     networks:
-      - backend
+      - traefik
 
 networks:
   traefik:
     name: traefik
-  backend:
-    name: backend
 
 volumes:
   cargo-cache:

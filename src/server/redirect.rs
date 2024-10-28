@@ -166,7 +166,11 @@ impl RedirectMiddleware {
         } else {
             format!("http://{}", traefik_data.service_addr)
         };
-        let backend_url = format!("{}{}", backend_url, traefik_data.request_path);
+        let backend_url = format!(
+            "{}{}",
+            backend_url,
+            traefik_data.request_path.unwrap_or("/".to_string())
+        );
         info!(?backend_url, "Making backend request");
 
         // Make backend request
