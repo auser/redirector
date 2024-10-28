@@ -203,10 +203,12 @@ impl RedirectMiddleware {
         let forwarded_headers: Vec<_> = headers
             .iter()
             .filter_map(|(key, value)| {
-                let header_name = key.as_str().strip_prefix("request_")?;
+                let header_name = key.as_str().strip_prefix("request_").unwrap_or(key.as_str());
                 let header_name = header_name
                     .strip_prefix("downstream_")
                     .unwrap_or(header_name);
+
+                debug!(?header_name, "Checking if we should forward header");
 
                 if self.should_forward_header(header_name) {
                     value.to_str().ok().map(|v| (header_name, v))

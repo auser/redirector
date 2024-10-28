@@ -1,0 +1,6 @@
+http:
+  services:
+    redirect-backend:
+      loadBalancer:
+        servers:
+          - url: "http://redirect-backend:80"

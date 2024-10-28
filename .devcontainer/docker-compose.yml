@@ -23,36 +23,7 @@ services:
     command: /bin/sh -c "while sleep 1000; do :; done"
     init: true
     user: developer
-    labels:
-      - "traefik.enable=true"
-      # Auth service definition
-      - "traefik.http.middlewares.redirector-auth.forwardauth.address=http://redirector-dev:3000"
-      - "traefik.http.middlewares.redirector-auth.forwardauth.trustForwardHeader=true"
-      - "traefik.http.middlewares.redirector-headers.headers.customRequestHeaders.X-Forwarded-Server=traefik"
 
-    networks:
-      - traefik
-
-  etcd:
-    image: bitnami/etcd:latest
-    hostname: redirector-etcd
-    environment:
-      - ALLOW_NONE_AUTHENTICATION=yes
-      - ETCD_ADVERTISE_CLIENT_URLS=http://redirector-etcd:2379
-      - PROXY_DOMAIN=herringbank.com
-    ports:
-      - 2379:2379
-      - 2380:2380
-      - 4001:4001
-      - 7001:7001
-    healthcheck:
-      test: ["CMD", "/bin/sh", "-c", "/etcd-healthcheck.sh"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    volumes:
-      - etcd_data:/opt/bitnami/etcd/data
-      - ./ext/etcd-healthcheck.sh:/etcd-healthcheck.sh
     networks:
       - traefik
 
@@ -73,23 +44,10 @@ services:
       - "8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    labels:
-      - "traefik.enable=true"
-      # Dashboard configuration
-      - "traefik.http.routers.dashboard.rule=Host(`traefik.localhost`)"
-      - "traefik.http.routers.dashboard.service=api@internal"
-      - "traefik.http.routers.dashboard.entrypoints=web"
-      # Main routing configuration
-      - "traefik.http.routers.main.rule=HostRegexp(`{subdomain:[a-z0-9-]+}.localhost`)"
-      - "traefik.http.routers.main.entrypoints=web"
-      - "traefik.http.routers.main.middlewares=add-forwarded-headers,redirector-auth"
-
-      - "traefik.http.middlewares.add-forwarded-headers.headers.customrequestheaders.X-Forwarded-Server=traefik"
+      - ./ext/traefik.yaml:/etc/traefik/traefik.yaml:ro
+      - ./ext/dynamic.yaml:/etc/traefik/dynamic.yaml:ro
     networks:
       - traefik
-    depends_on:
-      etcd:
-        condition: service_healthy
 
   # Example backend service that returns redirects
   redirect-backend:
@@ -97,13 +55,6 @@ services:
     container_name: redirect-backend
     volumes:
       - ./ext/nginx-redirect.conf:/etc/nginx/conf.d/backend.conf:ro
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=HostRegexp(`{subdomain:[a-z0-9-]+}.localhost`)"
-      - "traefik.http.services.backend.loadbalancer.server.port=80"
-      - "traefik.http.routers.backend.priority=1"  # Lower priority than main router
-      - "traefik.http.services.backend-service.loadbalancer.server.port=80"
-      # - "traefik.http.routers.backend.middlewares=redirector-headers"
     networks:
       - traefik
 
