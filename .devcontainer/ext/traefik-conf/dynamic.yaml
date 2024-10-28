@@ -8,7 +8,7 @@ http:
         - web
       middlewares:
         - "add-forwarded-headers"
-        - "redirector-auth"
+        - "redirector-auth@file"
       priority: 1
 
   services:
@@ -23,3 +23,11 @@ http:
       headers:
         customRequestHeaders:
           X-Forwarded-Server: "traefik"
+    redirector-auth:
+      forwardAuth:
+        address: "http://redirector-dev:3000"
+        trustForwardHeader: true
+        authResponseHeaders:
+          - "ServiceAddr"
+          - "ServiceUrl"
+          - "X-Forwarded-*"

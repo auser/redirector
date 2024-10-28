@@ -48,6 +48,11 @@ fn determine_backend_from_host(host: &str) -> Result<(String, String), Box<dyn s
             "redirect-backend:80".to_string(),
             "http://redirect-backend".to_string()
         )),
-        _ => Err("Unknown host".into())
+        _ => {
+            Ok((
+                "www.herringbank.com".to_string(),
+                "https://www.herringbank.com".to_string()
+            ))
+        }
     }
 }

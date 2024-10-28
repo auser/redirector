@@ -242,7 +242,6 @@ impl RedirectMiddleware {
         for (name, value) in headers {
             if let Some(name) = name {
                 if name != header::LOCATION && name != header::CONTENT_LENGTH {
-                    debug!(?name, ?value, "Forwarding response header");
                     response = response.header(name, value);
                 }
             }
