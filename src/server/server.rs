@@ -1,11 +1,19 @@
 use std::sync::Arc;
 
-use super::redirect::RedirectMiddlewareLayer;
+use super::redirect::RedirectHandler;
 use ::tracing::info;
-use axum::{response::IntoResponse, Router};
+use axum::{
+    body::Body,
+    extract::{Request, State},
+    response::{IntoResponse, Response},
+    Router,
+};
 use axum_prometheus::PrometheusMetricLayer;
 
-use crate::{config::Config, error::RedirectorResult, metrics::Metrics, util};
+use crate::{
+    config::Config, error::RedirectorResult, metrics::Metrics,
+    server::redirect_middleware::RedirectMiddlewareLayer, util,
+};
 
 pub fn create_server(config: Config) -> RedirectorResult<Server> {
     let server = Server::new(config)?;
@@ -28,11 +36,17 @@ impl Server {
         let metrics = Arc::new(Metrics::new());
         let (prometheus_layer, metric_handle) = PrometheusMetricLayer::pair();
 
+        let handler = Arc::new(RedirectHandler::new(
+            redirect_config.clone(),
+            metrics.clone(),
+        ));
+
         let app = axum::Router::new()
-            .route("/", axum::routing::get(handler))
             .route("/health", axum::routing::get(health_handler))
+            .route("/*path", axum::routing::any(redirect_handler))
             .layer(prometheus_layer)
-            .layer(RedirectMiddlewareLayer::new(redirect_config, metrics));
+            .layer(RedirectMiddlewareLayer::new(redirect_config, metrics))
+            .with_state(handler);
 
         let metrics_app = Router::new().route(
             "/metrics",
@@ -52,13 +66,27 @@ impl Server {
 
         let service = self.app.clone().into_make_service();
 
-        axum::serve(tcp_listener, service).await?;
+        axum::serve(tcp_listener, service).tcp_nodelay(true).await?;
 
         Ok(())
     }
 }
 
-async fn handler() -> impl IntoResponse {
+pub async fn redirect_handler(
+    State(handler): State<Arc<RedirectHandler>>,
+    request: Request<Body>,
+) -> impl IntoResponse {
+    match handler.handle_request(request).await {
+        Ok(response) => response,
+        Err(_) => Response::builder()
+            .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::empty())
+            .unwrap(),
+    }
+}
+
+#[allow(unused)]
+async fn default_handler() -> impl IntoResponse {
     "You should not see this"
 }
 

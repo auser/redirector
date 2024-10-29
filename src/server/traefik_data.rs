@@ -25,9 +25,17 @@ impl TryFrom<&HeaderMap> for TraefikData {
             .parse_optional_header("x-forwarded-host")
             .unwrap_or("http://redirect-backend".to_string());
 
+        let service_addr: String = headers
+            .parse_header("ServiceAddr")
+            .unwrap_or(headers.parse_header("x-forwarded-host")?);
+
+        let service_url: String = headers
+            .parse_header("ServiceURL")
+            .unwrap_or(headers.parse_header("x-forwarded-for")?);
+
         Ok(Self {
-            service_addr: headers.parse_header("ServiceAddr")?,
-            service_url: headers.parse_header("ServiceURL")?,
+            service_addr,
+            service_url,
             request_host,
             origin_status: headers.parse_optional_header("OriginStatus"),
             location: headers.parse_optional_header("origin_Location"),

@@ -8,7 +8,13 @@ axum = "0.7"
 tokio = { version = "1.0", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace", "util"] }
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = [
+  "json",
+  "stream",
+  "http2",
+  "multipart",
+  "default-tls",
+] }
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 serde = { version = "1.0", features = ["derive"] }
