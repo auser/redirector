@@ -23,6 +23,8 @@ bytes = "1.8.0"
 metrics = "0.24.0"
 prometheus = "0.13.4"
 axum-prometheus = "0.7.0"
+openssl = { version = "0.10", features = ["vendored"] }
+
 
 [dev-dependencies]
 lazy_static = "1.5.0"
@@ -30,21 +32,17 @@ mockito = "1.5.0"
 tokio = { version = "1.0", features = ["full", "test-util"] }
 hyper = "1.0"
 
+[build-dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }
+
 [profile.release]
-# Link time optimization gives better runtime performance
 lto = true
-# Enable full optimizations
 opt-level = 3
-# Strip debug symbols from the binary
 strip = true
-# Enable panic immediate abort instead of unwind (smaller binary)
 panic = "abort"
-# Parallel code generation units for faster compilation
 codegen-units = 1
-# Enables additional optimizations
 incremental = false
 
 [profile.dev]
-# Faster compilation for development
 opt-level = 0
 debug = true

@@ -27,6 +27,17 @@ services:
     networks:
       - traefik
 
+  redirector:
+    build:
+      context: ..
+      target: runtime
+      dockerfile: .devcontainer/Dockerfile
+      platforms:
+        - linux/amd64
+        - linux/arm64
+        - linux/arm/v7
+    image: auser/redirector:latest
+
   traefik-frontend:
     image: traefik:v2.10
     container_name: traefik-frontend

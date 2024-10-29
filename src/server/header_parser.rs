@@ -1,6 +1,7 @@
 use axum::http::HeaderMap;
 
 pub trait HeaderParser {
+    #[allow(unused)]
     fn parse_header<T: std::str::FromStr>(
         &self,
         key: &str,
