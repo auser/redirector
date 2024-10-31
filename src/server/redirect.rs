@@ -12,6 +12,7 @@ const EXCLUDED_HEADERS: [&str; 4] = ["host", "connection", "content-length", "tr
 #[derive(Clone)]
 pub struct RedirectHandler {
     config: Arc<RedirectConfig>,
+    #[allow(unused)]
     client: Arc<Client>,
     excluded_headers: Arc<HashSet<String>>,
     metrics: Arc<Metrics>,
@@ -109,19 +110,28 @@ impl RedirectHandler {
         &self,
         resp: reqwest::Response,
     ) -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync>> {
+        let status = resp.status();
         let headers = resp.headers().clone();
         let body = resp.bytes().await?;
         let body = Body::from(body);
-        let content_length = body.size_hint().exact().unwrap_or(0);
+        // let content_length = body.size_hint().exact().unwrap_or(0);
 
-        let mut response = Response::builder().status(StatusCode::OK);
+        let mut response = Response::builder().status(status);
 
-        response = response.header(header::CONTENT_LENGTH, content_length);
-        response = response.header(header::CONNECTION, "close");
+        // response = response.header(header::CONTENT_LENGTH, content_length);
+        // response = response.header(header::CONNECTION, "close");
+        let has_transfer_encoding = headers.contains_key(header::TRANSFER_ENCODING);
+        if !has_transfer_encoding {
+            let content_length = body.size_hint().exact().unwrap_or(0);
+            response = response.header(header::CONTENT_LENGTH, content_length);
+        }
 
         for (name, value) in headers {
             if let Some(name) = name {
-                if name != header::LOCATION && name != header::CONTENT_LENGTH {
+                if name != header::CONTENT_LENGTH
+                    && name != header::TRANSFER_ENCODING
+                    && name != header::CONNECTION
+                {
                     response = response.header(name, value);
                 }
             }
@@ -175,7 +185,9 @@ impl RedirectHandler {
         );
         info!(?backend_url, "Making backend request");
 
-        let backend_req = self.client.get(&backend_url);
+        let client = Self::new_client(&self.config);
+
+        let backend_req = client.get(&backend_url);
         let backend_req = if self.config.forward_headers {
             self.forward_headers(backend_req, headers)
         } else {

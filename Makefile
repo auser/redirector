@@ -1,9 +1,9 @@
 IMAGE_TAG:=auser/redirector
 
-.PHONY: build_docker run_docker test_docker
+.PHONY: build_docker run_docker test_docker build_docker_multiarch
 
 build_docker:
-	docker buildx build --platform=linux/amd64,linux/arm64 -t ${IMAGE_TAG} -f Dockerfile .
+	docker buildx build -t ${IMAGE_TAG} -f Dockerfile --load .
 
 run_docker:
 	docker run --rm -p 3001:3000 ${IMAGE_TAG}

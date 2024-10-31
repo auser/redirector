@@ -10,10 +10,7 @@ use axum::{
 };
 use axum_prometheus::PrometheusMetricLayer;
 
-use crate::{
-    config::Config, error::RedirectorResult, metrics::Metrics,
-    server::redirect_middleware::RedirectMiddlewareLayer, util,
-};
+use crate::{config::Config, error::RedirectorResult, metrics::Metrics, util};
 
 pub fn create_server(config: Config) -> RedirectorResult<Server> {
     let server = Server::new(config)?;
@@ -43,9 +40,9 @@ impl Server {
 
         let app = axum::Router::new()
             .route("/health", axum::routing::get(health_handler))
-            .route("/*path", axum::routing::any(redirect_handler))
+            .fallback(axum::routing::any(redirect_handler))
             .layer(prometheus_layer)
-            .layer(RedirectMiddlewareLayer::new(redirect_config, metrics))
+            // .layer(RedirectMiddlewareLayer::new(redirect_config, metrics))
             .with_state(handler);
 
         let metrics_app = Router::new().route(
