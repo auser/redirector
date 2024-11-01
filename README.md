@@ -5,12 +5,13 @@ Sometimes you just need a simple redirector... This redirector is set up to work
 ## Usage
 
 ```bash
+cargo run -- --help
+```
+
+
+## Serve
+
+```bash
 cargo run serve
 ```
 
-
-## Version
-
-```bash
-cargo run --version
-```

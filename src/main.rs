@@ -1,7 +1,7 @@
-use redirector::{cli::run_cli, error::RedirectorResult};
+use redirector::cli::run_cli;
 
 #[tokio::main]
-async fn main() -> RedirectorResult<()> {
+async fn main() -> anyhow::Result<()> {
     run_cli().await?;
     Ok(())
 }
