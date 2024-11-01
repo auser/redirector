@@ -1,7 +1,7 @@
 use crate::{config::RedirectConfig, metrics::Metrics, server::traefik_data::TraefikData};
 use axum::{
     body::{Body, HttpBody},
-    http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode},
+    http::{header, HeaderMap, Request, Response, StatusCode},
 };
 use reqwest::Client;
 use std::{collections::HashSet, sync::Arc, time::Instant};
@@ -42,6 +42,24 @@ impl RedirectHandler {
         }
     }
 
+    // fn new_client(config: &RedirectConfig) -> Client {
+    //     let max_redirects = config.max_redirects;
+    //     Client::builder()
+    //         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+    //             if attempt.previous().len() >= max_redirects as usize {
+    //                 debug!("Max redirects reached, stopping");
+    //                 attempt.stop()
+    //             } else {
+    //                 debug!("Following redirect");
+    //                 attempt.follow()
+    //             }
+    //         }))
+    //         .danger_accept_invalid_certs(true)
+    //         .danger_accept_invalid_hostnames(true)
+    //         .build()
+    //         .expect("Failed to build HTTP client")
+    // }
+
     fn new_client(config: &RedirectConfig) -> Client {
         let max_redirects = config.max_redirects;
         Client::builder()
@@ -50,14 +68,59 @@ impl RedirectHandler {
                     debug!("Max redirects reached, stopping");
                     attempt.stop()
                 } else {
-                    debug!("Following redirect");
-                    attempt.follow()
+                    // Get the original path from the first request
+                    if let Some(original_url) = attempt.previous().first() {
+                        let original_path = original_url.path();
+                        debug!(?original_path, "Original request path");
+
+                        // Check if we're being redirected to root
+                        if attempt.url().path() == "/" {
+                            debug!("Preserving original path in redirect");
+                            let host = attempt.url().host_str().unwrap_or_default();
+                            let new_url = format!("https://{}{}", host, original_path);
+                            debug!(?new_url, "New redirect target");
+                            attempt.follow()
+                        } else {
+                            debug!("Following standard redirect");
+                            attempt.follow()
+                        }
+                    } else {
+                        attempt.follow()
+                    }
                 }
             }))
             .danger_accept_invalid_certs(true)
             .danger_accept_invalid_hostnames(true)
             .build()
             .expect("Failed to build HTTP client")
+    }
+
+    pub fn construct_backend_url(&self, base_url: &str, fallback_addr: &str, path: &str) -> String {
+        let base_url = if cfg!(test) {
+            // In test environment, keep HTTP
+            if base_url.starts_with("http") {
+                base_url.to_string()
+            } else {
+                format!("http://{}", fallback_addr)
+            }
+        } else {
+            // In production, use HTTPS
+            if base_url.starts_with("http") {
+                let mut url = base_url.to_string();
+                if url.starts_with("http://") {
+                    url = url.replace("http://", "https://");
+                }
+                url
+            } else {
+                format!("https://{}", fallback_addr)
+            }
+        };
+
+        if base_url.ends_with('/') {
+            format!("{}{}", &base_url[..base_url.len() - 1], path)
+        } else {
+            format!("{}{}", base_url, path)
+        }
     }
 
     #[instrument(skip(self, headers))]
@@ -80,31 +143,29 @@ impl RedirectHandler {
         backend_req: reqwest::RequestBuilder,
         headers: &HeaderMap,
     ) -> reqwest::RequestBuilder {
-        let forwarded_headers: Vec<_> = headers
-            .iter()
-            .filter_map(|(key, value)| {
-                let header_name = key.as_str();
-                let header_name = header_name
-                    .strip_prefix("request_")
-                    .unwrap_or(header_name)
-                    .strip_prefix("downstream_")
-                    .unwrap_or(header_name);
+        let mut req = backend_req;
 
-                if self.should_forward_request_header(header_name) {
-                    value.to_str().ok().map(|v| (header_name, v))
-                } else {
-                    None
+        // Forward original headers
+        for (key, value) in headers {
+            let header_name = key.as_str();
+            let header_name = header_name
+                .strip_prefix("request_")
+                .unwrap_or(header_name)
+                .strip_prefix("downstream_")
+                .unwrap_or(header_name);
+
+            if self.should_forward_request_header(header_name) ||
+               header_name.starts_with("If-") ||  // Forward cache headers
+               header_name == "Cache-Control"
+            {
+                if let Ok(v) = value.to_str() {
+                    req = req.header(header_name, v);
                 }
-            })
-            .collect();
+            }
+        }
 
-        debug!(?forwarded_headers, "Forwarding headers to backend");
-
-        forwarded_headers
-            .into_iter()
-            .fold(backend_req, |req, (name, value)| req.header(name, value))
+        req
     }
-
     #[instrument(skip(self))]
     fn should_forward_response_header(&self, header_name: &str) -> bool {
         !vec![
@@ -128,13 +189,13 @@ impl RedirectHandler {
         for (key, value) in headers {
             let header_name = key.as_str();
             if self.should_forward_response_header(header_name) {
-                debug!(?key, ?value, "Forwarding response header");
                 new_headers.insert(key, value.clone());
             }
         }
 
         response
     }
+
     #[instrument(skip(self, resp))]
     async fn build_response(
         &self,
@@ -144,23 +205,44 @@ impl RedirectHandler {
         let status = resp.status();
         let headers = resp.headers().clone();
         let request_headers = request.headers().clone();
-        let body = resp.bytes().await?;
-        let body = Body::from(body);
 
-        let mut response = Response::builder().status(status);
-
-        // Get content type from response or set a default
+        // Get content type from response or preserve original
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .cloned()
-            .unwrap_or_else(|| HeaderValue::from_static("application/octet-stream"));
+            .unwrap_or_else(|| "application/octet-stream".parse().unwrap());
 
-        // Set content type
+        // For 304 responses, we don't need to get the body
+        let body = if status == StatusCode::NOT_MODIFIED {
+            Body::empty()
+        } else {
+            let bytes = resp.bytes().await?;
+            Body::from(bytes)
+        };
+
+        let mut response = Response::builder().status(status);
+
+        // Always forward content-type
         response = response.header(header::CONTENT_TYPE, content_type);
+
+        // Forward cache-related headers
+        let cache_headers = [
+            header::IF_MODIFIED_SINCE.as_str(),
+            header::IF_NONE_MATCH.as_str(),
+            header::CACHE_CONTROL.as_str(),
+            header::ETAG.as_str(),
+            header::LAST_MODIFIED.as_str(),
+        ];
+
+        for &header in &cache_headers {
+            if let Some(value) = headers.get(header) {
+                response = response.header(header, value);
+            }
+        }
 
         // Handle content-length and transfer-encoding
         let has_transfer_encoding = headers.contains_key(header::TRANSFER_ENCODING);
-        if !has_transfer_encoding {
+        if !has_transfer_encoding && status != StatusCode::NOT_MODIFIED {
             let content_length = body.size_hint().exact().unwrap_or(0);
             response = response.header(header::CONTENT_LENGTH, content_length);
         }
@@ -174,7 +256,11 @@ impl RedirectHandler {
         // Forward necessary request headers
         for (name, value) in request_headers {
             if let Some(name) = name {
-                if name.as_str().starts_with("X-Forwarded-") || name.as_str() == "Host" {
+                if name.as_str().starts_with("X-Forwarded-")
+                    || name.as_str() == "Host"
+                    || name.as_str().starts_with("If-")
+                {
+                    // Forward cache headers from request
                     debug!(?name, ?value, "Forwarding request header");
                     response.headers_mut().insert(name, value);
                 }
@@ -200,11 +286,7 @@ impl RedirectHandler {
         let start_time = Instant::now();
         let headers = request.headers().clone();
         let method = request.method().clone();
-        let query = request
-            .uri()
-            .query()
-            .map(|q| format!("?{}", q))
-            .unwrap_or_default();
+        let uri = request.uri();
 
         if !self.is_traefik_request(&headers) {
             warn!(?headers, "Request is not from traefik");
@@ -226,17 +308,17 @@ impl RedirectHandler {
             }
         };
 
-        let backend_url = if traefik_data.service_url.starts_with("http") {
-            traefik_data.service_url
-        } else {
-            format!("http://{}", traefik_data.service_addr)
-        };
+        let path = uri.path().to_string();
+        let query = request
+            .uri()
+            .query()
+            .map(|q| format!("?{}", q))
+            .unwrap_or_default();
 
-        let backend_url = format!(
-            "{}{}{}",
-            backend_url,
-            traefik_data.request_path.unwrap_or("/".to_string()),
-            query
+        let backend_url = self.construct_backend_url(
+            &traefik_data.service_url,
+            &traefik_data.service_addr,
+            &format!("{}{}", path, query),
         );
 
         info!(?backend_url, "Making backend request");
@@ -244,7 +326,6 @@ impl RedirectHandler {
         let client = Self::new_client(&self.config);
 
         let mut backend_req = client.request(method.clone(), &backend_url);
-
         // Forward the request body for POST/PUT etc.
         if method != reqwest::Method::GET && method != reqwest::Method::HEAD {
             let body = std::mem::replace(request.body_mut(), Body::empty());

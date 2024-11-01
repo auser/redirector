@@ -107,12 +107,19 @@ impl TestRequest {
     }
 
     pub fn prepare(&mut self, backend_url: String) -> &mut Self {
+        // For tests, keep the original HTTP URL since our test server doesn't support HTTPS
         self.headers.insert(
             "ServiceAddr",
             HeaderValue::from_str(&backend_url.replace("http://", "")).unwrap(),
         );
         self.headers
             .insert("ServiceURL", HeaderValue::from_str(&backend_url).unwrap());
+
+        // Still set forwarded proto as HTTPS to simulate production environment
+        self.headers
+            .insert("X-Forwarded-Proto", HeaderValue::from_static("https"));
+        self.headers
+            .insert("X-Forwarded-Port", HeaderValue::from_static("443"));
         self
     }
 
@@ -187,7 +194,9 @@ impl TestRequestBuilder {
         self = self
             .header("X-traefik-request", "traefik")
             .header("ServiceAddr", "localhost:3000")
-            .header("ServiceUrl", "http://localhost:3000")
+            .header("ServiceUrl", "http://localhost:3000") // Use HTTP for tests
+            .header("X-Forwarded-Proto", "https") // But still simulate HTTPS frontend
+            .header("X-Forwarded-Port", "443")
             .header("RequestPath", path);
         self
     }

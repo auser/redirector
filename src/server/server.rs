@@ -95,11 +95,17 @@ async fn health_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     #[allow(unused_imports)]
     use crate::server::test_helpers::init_test_tracing;
     use crate::{
         config::RedirectConfig,
-        server::test_helpers::{create_test_app, spawn_backend_server, TestRequest},
+        metrics::Metrics,
+        server::{
+            redirect::RedirectHandler,
+            test_helpers::{create_test_app, spawn_backend_server, TestRequest},
+        },
     };
 
     use axum::{body::Body, extract::Path, http::StatusCode, response::Response, Router};
@@ -161,10 +167,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_handles_image_request() {
+        // init_test_tracing(None);
         let request = TestRequest::builder()
             .header("Host", "static.collegegreen.net")
             .header("Accept", "image/*")
-            .with_traefik_headers("/images/test.jpg") // Now passing &str directly
+            .with_traefik_headers("/images/test.jpg")
             .uri("/images/test.jpg")
             .expected_status(StatusCode::OK)
             .expected_header("Content-Type", "image/jpeg")
@@ -173,8 +180,133 @@ mod tests {
         run_test_request(request).await;
     }
 
+    #[tokio::test]
+    async fn test_handles_request_with_path_and_query() {
+        let request = TestRequest::builder()
+            .header("Host", "api.financialpayments.com")
+            .header("X-traefik-request", "traefik")
+            .header("ServiceAddr", "localhost:3000")
+            .header("ServiceUrl", "http://localhost:3000")
+            .header("RequestPath", "/images/test.jpg")
+            .uri("/images/test.jpg?width=100&height=200")
+            .expected_status(StatusCode::OK)
+            .expected_header("Content-Type", "image/jpeg")
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_handles_path_with_multiple_segments() {
+        let request = TestRequest::builder()
+            .header("Host", "api.financialpayments.com")
+            .header("X-traefik-request", "traefik")
+            .header("ServiceAddr", "localhost:3000")
+            .header("ServiceUrl", "http://localhost:3000")
+            .header("RequestPath", "/path/to/deep/resource.jpg")
+            .uri("/path/to/deep/resource.jpg")
+            .expected_status(StatusCode::OK)
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_handles_path_with_special_characters() {
+        let request = TestRequest::builder()
+            .header("Host", "api.financialpayments.com")
+            .header("X-traefik-request", "traefik")
+            .header("ServiceAddr", "localhost:3000")
+            .header("ServiceUrl", "http://localhost:3000")
+            .header("RequestPath", "/images/test image with spaces.jpg")
+            .uri("/images/test%20image%20with%20spaces.jpg")
+            .expected_status(StatusCode::OK)
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_handles_path_with_trailing_slash() {
+        let request = TestRequest::builder()
+            .header("Host", "api.financialpayments.com")
+            .header("X-traefik-request", "traefik")
+            .header("ServiceAddr", "localhost:3000")
+            .header("ServiceUrl", "http://localhost:3000/") // Note trailing slash
+            .header("RequestPath", "/images/test.jpg")
+            .uri("/images/test.jpg")
+            .expected_status(StatusCode::OK)
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_handles_https_redirect() {
+        let request = TestRequest::builder()
+            .header("Host", "api.financialpayments.com")
+            .with_traefik_headers("/images/test.jpg")
+            .uri("/images/test.jpg")
+            .expected_status(StatusCode::OK)
+            .expected_header("Content-Type", "image/jpeg")
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_handles_http_to_https_redirect() {
+        let request = TestRequest::builder()
+            .header("Host", "api.financialpayments.com")
+            .with_traefik_headers("/images/test.jpg")
+            .header("X-Forwarded-Proto", "http")
+            .header("X-Forwarded-Port", "80")
+            .uri("/images/test.jpg")
+            .expected_status(StatusCode::OK)
+            .expected_header("Content-Type", "image/jpeg")
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    // Add a test for the backend URL construction
+    #[test]
+    fn test_backend_url_construction() {
+        let config = RedirectConfig::default();
+        let metrics = Arc::new(Metrics::new());
+        let handler = RedirectHandler::new(config, metrics);
+
+        // Test with various URL combinations
+        let test_cases = vec![
+            (
+                "http://backend:8080",
+                "/path/to/resource",
+                "http://backend:8080/path/to/resource",
+            ),
+            (
+                "http://backend:8080/",
+                "/path/to/resource",
+                "http://backend:8080/path/to/resource",
+            ),
+            (
+                "backend:8080",
+                "/path/to/resource",
+                "http://backend:8080/path/to/resource",
+            ),
+        ];
+
+        for (service_url, path, expected) in test_cases {
+            let url = handler.construct_backend_url(service_url, &service_url, path);
+            assert_eq!(url, expected);
+        }
+    }
+
+    //-----------------------------------------
+    // Helpers
+    //-----------------------------------------
     use axum::routing;
     use bytes::Bytes;
+    use tracing::debug;
     async fn spawn_simulated_backend_server() -> String {
         let app = Router::new()
             .route(
@@ -250,7 +382,22 @@ mod tests {
                         .body(Body::from(image_data))
                         .unwrap()
                 }),
-            );
+            )
+            .fallback(|uri: axum::http::Uri| async move {
+                debug!("Handling fallback request: {}", uri);
+                // For debugging, log the full request details
+                tracing::debug!(
+                    path = ?uri.path(),
+                    query = ?uri.query(),
+                    "Received request in fallback handler"
+                );
+
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/octet-stream")
+                    .body(Body::from("test content"))
+                    .unwrap()
+            });
 
         spawn_backend_server(app).await
     }
@@ -261,6 +408,8 @@ mod tests {
         let app = create_test_app(RedirectConfig::default());
         let test_req = test_req.prepare(backend_url);
         let mut response = test_req.make_request(app).await;
+
+        debug!(?response, "Response");
 
         // Check status
         assert_eq!(response.status, test_req.expected_status);
