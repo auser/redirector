@@ -28,6 +28,7 @@ impl Server {
         util::init_tracing();
 
         info!("Initializing server");
+        info!("{}", crate::config::get_version());
         debug!(?config, "Server config");
         let config = Arc::new(config);
         let redirect_config = config.redirect.clone();
@@ -40,10 +41,21 @@ impl Server {
             metrics.clone(),
         ));
 
+        let logging_layer =
+            tower_http::trace::TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+                tracing::debug_span!(
+                    "request",
+                    method = ?request.method(),
+                    uri = ?request.uri(),
+                    content_type = ?request.headers().get("content-type"),
+                )
+            });
+
         let app = axum::Router::new()
             .route("/health", axum::routing::get(health_handler))
             .fallback(axum::routing::any(redirect_handler))
             .layer(prometheus_layer)
+            .layer(logging_layer)
             // .layer(RedirectMiddlewareLayer::new(redirect_config, metrics))
             .with_state(handler);
 
@@ -269,6 +281,28 @@ mod tests {
         run_test_request(request).await;
     }
 
+    #[tokio::test]
+    async fn test_handles_asset_content_types() {
+        let assets = vec![
+            ("/script.js", "application/javascript"),
+            ("/style.css", "text/css"),
+            ("/image.jpg", "image/jpeg"),
+            ("/file.png", "image/png"),
+        ];
+
+        for (path, content_type) in assets {
+            let request = TestRequest::builder()
+                .header("Host", "www.collegegreen.net")
+                .with_traefik_headers(path)
+                .uri(path)
+                .expected_status(StatusCode::OK)
+                .expected_header("Content-Type", content_type)
+                .build();
+
+            run_test_request(request).await;
+        }
+    }
+
     // Add a test for the backend URL construction
     #[test]
     fn test_backend_url_construction() {
@@ -299,6 +333,45 @@ mod tests {
             let url = handler.construct_backend_url(service_url, &service_url, path);
             assert_eq!(url, expected);
         }
+    }
+
+    #[tokio::test]
+    async fn test_handles_js_content() {
+        let request = TestRequest::builder()
+            .header("Host", "www.collegegreen.net")
+            .with_traefik_headers("/assets/script.js")
+            .uri("/assets/script.js")
+            .expected_status(StatusCode::OK)
+            .expected_header("Content-Type", "application/javascript")
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_handles_css_content() {
+        let request = TestRequest::builder()
+            .header("Host", "www.collegegreen.net")
+            .with_traefik_headers("/styles/main.css")
+            .uri("/styles/main.css")
+            .expected_status(StatusCode::OK)
+            .expected_header("Content-Type", "text/css")
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_handles_nested_assets() {
+        let request = TestRequest::builder()
+            .header("Host", "www.collegegreen.net")
+            .with_traefik_headers("/path/to/deep/styles/main.css")
+            .uri("/path/to/deep/styles/main.css")
+            .expected_status(StatusCode::OK)
+            .expected_header("Content-Type", "text/css")
+            .build();
+
+        run_test_request(request).await;
     }
 
     //-----------------------------------------
@@ -383,19 +456,43 @@ mod tests {
                         .unwrap()
                 }),
             )
+            .route(
+                "/*filepath",
+                routing::get(|Path(filepath): Path<String>| async move {
+                    debug!(?filepath, "Handling asset request");
+
+                    let (content, content_type) = if filepath.ends_with(".js") {
+                        (
+                            format!("console.log('JS file: {}');", filepath),
+                            "application/javascript",
+                        )
+                    } else if filepath.ends_with(".css") {
+                        (
+                            format!("/* CSS file: {} */\nbody {{ color: blue; }}", filepath),
+                            "text/css",
+                        )
+                    } else if filepath.ends_with(".jpg") || filepath.ends_with(".jpeg") {
+                        ("JPEG content".to_string(), "image/jpeg")
+                    } else if filepath.ends_with(".png") {
+                        ("PNG content".to_string(), "image/png")
+                    } else {
+                        (format!("Content for: {}", filepath), "text/plain")
+                    };
+
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("Content-Type", content_type)
+                        .header("Content-Length", content.len().to_string())
+                        .body(Body::from(content))
+                        .unwrap()
+                }),
+            )
             .fallback(|uri: axum::http::Uri| async move {
                 debug!("Handling fallback request: {}", uri);
-                // For debugging, log the full request details
-                tracing::debug!(
-                    path = ?uri.path(),
-                    query = ?uri.query(),
-                    "Received request in fallback handler"
-                );
-
                 Response::builder()
-                    .status(StatusCode::OK)
-                    .header("Content-Type", "application/octet-stream")
-                    .body(Body::from("test content"))
+                    .status(StatusCode::NOT_FOUND)
+                    .header("Content-Type", "text/plain")
+                    .body(Body::from(format!("Not found: {}", uri.path())))
                     .unwrap()
             });
 

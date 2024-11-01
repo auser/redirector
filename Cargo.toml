@@ -2,6 +2,7 @@
 name = "redirector"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 axum = "0.7"
@@ -31,6 +32,8 @@ prometheus = "0.13.4"
 axum-prometheus = "0.7.0"
 openssl = { version = "0.10", features = ["vendored"] }
 hyper = "1.0"
+vergen = "9.0.1"
+vergen-git2 = "1.0.1"
 
 
 [dev-dependencies]
@@ -41,6 +44,9 @@ hyper = "1.0"
 
 [build-dependencies]
 openssl-sys = { version = "0.9", features = ["vendored"] }
+# All features enabled
+vergen-git2 = { version = "1.0.0", features = ["build", "cargo", "si"] }
+
 
 [profile.release]
 lto = true

@@ -1,13 +1,18 @@
 use crate::{config::RedirectConfig, metrics::Metrics, server::traefik_data::TraefikData};
 use axum::{
     body::{Body, HttpBody},
-    http::{header, HeaderMap, Request, Response, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode},
 };
 use reqwest::Client;
 use std::{collections::HashSet, sync::Arc, time::Instant};
 use tracing::{debug, error, info, instrument, warn};
 
-const EXCLUDED_HEADERS: [&str; 4] = ["host", "connection", "content-length", "transfer-encoding"];
+const EXCLUDED_HEADERS: [&str; 4] = [
+    "connection",
+    "content-length",
+    "transfer-encoding",
+    "content-type",
+];
 
 #[derive(Clone)]
 pub struct RedirectHandler {
@@ -172,6 +177,7 @@ impl RedirectHandler {
             header::CONTENT_LENGTH,
             header::TRANSFER_ENCODING,
             header::CONNECTION,
+            header::CONTENT_TYPE,
         ]
         .iter()
         .any(|h| h.as_str().to_lowercase() == header_name.to_lowercase())
@@ -193,6 +199,21 @@ impl RedirectHandler {
             }
         }
 
+        // Forward cache-related headers
+        let cache_headers = [
+            header::IF_MODIFIED_SINCE.as_str(),
+            header::IF_NONE_MATCH.as_str(),
+            header::CACHE_CONTROL.as_str(),
+            header::ETAG.as_str(),
+            header::LAST_MODIFIED.as_str(),
+        ];
+
+        for &header in &cache_headers {
+            if let Some(value) = headers.get(header) {
+                new_headers.insert(header, value.clone());
+            }
+        }
+
         response
     }
 
@@ -207,10 +228,25 @@ impl RedirectHandler {
         let request_headers = request.headers().clone();
 
         // Get content type from response or preserve original
+        // Get content type from response and preserve it exactly as received
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .cloned()
-            .unwrap_or_else(|| "application/octet-stream".parse().unwrap());
+            .unwrap_or_else(|| {
+                // Set default content type based on path extension
+                let path = request.uri().path().to_lowercase();
+                if path.ends_with(".js") {
+                    HeaderValue::from_static("application/javascript")
+                } else if path.ends_with(".css") {
+                    HeaderValue::from_static("text/css")
+                } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+                    HeaderValue::from_static("image/jpeg")
+                } else if path.ends_with(".png") {
+                    HeaderValue::from_static("image/png")
+                } else {
+                    HeaderValue::from_static("application/octet-stream")
+                }
+            });
 
         // For 304 responses, we don't need to get the body
         let body = if status == StatusCode::NOT_MODIFIED {
@@ -224,21 +260,6 @@ impl RedirectHandler {
 
         // Always forward content-type
         response = response.header(header::CONTENT_TYPE, content_type);
-
-        // Forward cache-related headers
-        let cache_headers = [
-            header::IF_MODIFIED_SINCE.as_str(),
-            header::IF_NONE_MATCH.as_str(),
-            header::CACHE_CONTROL.as_str(),
-            header::ETAG.as_str(),
-            header::LAST_MODIFIED.as_str(),
-        ];
-
-        for &header in &cache_headers {
-            if let Some(value) = headers.get(header) {
-                response = response.header(header, value);
-            }
-        }
 
         // Handle content-length and transfer-encoding
         let has_transfer_encoding = headers.contains_key(header::TRANSFER_ENCODING);
