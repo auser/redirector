@@ -45,7 +45,7 @@ hyper = "1.0"
 [build-dependencies]
 openssl-sys = { version = "0.9", features = ["vendored"] }
 # All features enabled
-vergen-git2 = { version = "1.0.0", features = ["build", "cargo", "si"] }
+vergen-git2 = { version = "1.0.0", features = ["build", "si"] }
 
 
 [profile.release]
