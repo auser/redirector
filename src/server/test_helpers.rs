@@ -94,6 +94,7 @@ pub struct TestRequest {
     pub headers: HeaderMap,
     pub method: &'static str,
     pub uri: &'static str,
+    pub body: Option<String>,
     pub expected_status: StatusCode,
     pub response: Option<TestRequestResponse>,
     pub expected_headers: Vec<(&'static str, &'static str)>,
@@ -120,10 +121,13 @@ impl TestRequest {
         for (key, value) in self.headers.iter() {
             req_builder = req_builder.header(key, value);
         }
-        let request = req_builder
-            .body(Body::empty())
-            .expect("unable to build request");
+        let body = if let Some(body) = &self.body {
+            Body::from(body.clone())
+        } else {
+            Body::empty()
+        };
 
+        let request = req_builder.body(body).unwrap();
         let response = app.oneshot(request).await.unwrap();
 
         TestRequestResponse::new(response)
@@ -140,6 +144,7 @@ fn default_headers() -> HeaderMap {
         "X-Forwarded-Proto": "https",
         "X-Forwarded-Port": "443",
         "X-Forwarded-Server": "traefik",
+        "X-Forwarded-For": "traefik",
         "User-Agent": "Mozilla/5.0",
         "RequestPath": "/student/",
         "RequestHost": "ibs.collegegreen.net",
@@ -151,6 +156,8 @@ pub struct TestRequestBuilder {
     headers: HeaderMap,
     method: Option<&'static str>,
     uri: Option<&'static str>,
+    body: Option<String>,
+
     expected_status: Option<StatusCode>,
     expected_body_contains: Option<&'static str>,
     expected_headers: Vec<(&'static str, &'static str)>,
@@ -162,6 +169,7 @@ impl Default for TestRequestBuilder {
             headers: default_headers(),
             method: Some("GET"),
             uri: Some("/"),
+            body: None,
             expected_status: Some(StatusCode::OK),
             expected_body_contains: None,
             expected_headers: vec![],
@@ -175,6 +183,15 @@ impl TestRequestBuilder {
         self
     }
 
+    pub fn with_traefik_headers(mut self, path: &'static str) -> Self {
+        self = self
+            .header("X-traefik-request", "traefik")
+            .header("ServiceAddr", "localhost:3000")
+            .header("ServiceUrl", "http://localhost:3000")
+            .header("RequestPath", path);
+        self
+    }
+
     pub fn header(mut self, key: &'static str, value: &'static str) -> Self {
         let header_name = HeaderName::from_str(key).unwrap();
         let header_value = HeaderValue::from_str(value).unwrap();
@@ -184,6 +201,11 @@ impl TestRequestBuilder {
 
     pub fn method(mut self, method: &'static str) -> Self {
         self.method = Some(method);
+        self
+    }
+
+    pub fn body(mut self, body: impl Into<String>) -> Self {
+        self.body = Some(body.into());
         self
     }
 
@@ -215,7 +237,7 @@ impl TestRequestBuilder {
             expected_status: self.expected_status.expect("expected_status is required"),
             expected_body_contains: self.expected_body_contains,
             expected_headers: self.expected_headers,
-
+            body: self.body,
             response: None,
         }
     }
@@ -226,7 +248,7 @@ pub fn create_test_app(redirect_config: RedirectConfig) -> Router {
     let handler = Arc::new(RedirectHandler::new(redirect_config, metrics));
     Router::new()
         .route("/", get(|| async { "Hello, World!" }))
-        .route("/*path", any(redirect_handler))
+        .fallback(any(redirect_handler))
         .with_state(handler)
 }
 
@@ -244,11 +266,11 @@ pub async fn spawn_backend_server(app: Router) -> String {
 }
 
 static INIT: Once = Once::new();
-pub fn init_test_tracing() {
+pub fn init_test_tracing(level: Option<&str>) {
     INIT.call_once(|| {
         let subscriber = tracing_subscriber::fmt()
             .with_test_writer()
-            .with_env_filter("debug")
+            .with_env_filter(level.unwrap_or("debug"))
             .try_init();
 
         // Ignore if it's already been set

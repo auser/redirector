@@ -1,7 +1,7 @@
 use crate::{config::RedirectConfig, metrics::Metrics, server::traefik_data::TraefikData};
 use axum::{
     body::{Body, HttpBody},
-    http::{header, HeaderMap, Request, Response, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode},
 };
 use reqwest::Client;
 use std::{collections::HashSet, sync::Arc, time::Instant};
@@ -20,7 +20,7 @@ pub struct RedirectHandler {
 
 impl RedirectHandler {
     pub fn new(config: RedirectConfig, metrics: Arc<Metrics>) -> Self {
-        info!("RedirectHandler initialized");
+        info!(?config, "RedirectHandler initialized");
 
         let max_redirects = config.max_redirects;
         info!(?max_redirects, "Creating new RedirectHandler");
@@ -70,12 +70,12 @@ impl RedirectHandler {
     }
 
     #[instrument(skip(self))]
-    fn should_forward_header(&self, header_name: &str) -> bool {
+    fn should_forward_request_header(&self, header_name: &str) -> bool {
         !self.excluded_headers.contains(&header_name.to_lowercase())
     }
 
     #[instrument(skip(self, backend_req, headers))]
-    fn forward_headers(
+    fn forward_request_headers(
         &self,
         backend_req: reqwest::RequestBuilder,
         headers: &HeaderMap,
@@ -90,7 +90,7 @@ impl RedirectHandler {
                     .strip_prefix("downstream_")
                     .unwrap_or(header_name);
 
-                if self.should_forward_header(header_name) {
+                if self.should_forward_request_header(header_name) {
                     value.to_str().ok().map(|v| (header_name, v))
                 } else {
                     None
@@ -105,40 +105,87 @@ impl RedirectHandler {
             .fold(backend_req, |req, (name, value)| req.header(name, value))
     }
 
+    #[instrument(skip(self))]
+    fn should_forward_response_header(&self, header_name: &str) -> bool {
+        !vec![
+            header::CONTENT_LENGTH,
+            header::TRANSFER_ENCODING,
+            header::CONNECTION,
+        ]
+        .iter()
+        .any(|h| h.as_str().to_lowercase() == header_name.to_lowercase())
+    }
+
+    #[instrument(skip(self, response, headers))]
+    fn forward_response_headers(
+        &self,
+        mut response: Response<Body>,
+        headers: &HeaderMap,
+    ) -> Response<Body> {
+        let new_headers = response.headers_mut();
+
+        // Forward original headers
+        for (key, value) in headers {
+            let header_name = key.as_str();
+            if self.should_forward_response_header(header_name) {
+                debug!(?key, ?value, "Forwarding response header");
+                new_headers.insert(key, value.clone());
+            }
+        }
+
+        response
+    }
     #[instrument(skip(self, resp))]
     async fn build_response(
         &self,
         resp: reqwest::Response,
+        request: Request<Body>,
     ) -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync>> {
         let status = resp.status();
         let headers = resp.headers().clone();
+        let request_headers = request.headers().clone();
         let body = resp.bytes().await?;
         let body = Body::from(body);
-        // let content_length = body.size_hint().exact().unwrap_or(0);
 
         let mut response = Response::builder().status(status);
 
-        // response = response.header(header::CONTENT_LENGTH, content_length);
-        // response = response.header(header::CONNECTION, "close");
+        // Get content type from response or set a default
+        let content_type = headers
+            .get(header::CONTENT_TYPE)
+            .cloned()
+            .unwrap_or_else(|| HeaderValue::from_static("application/octet-stream"));
+
+        // Set content type
+        response = response.header(header::CONTENT_TYPE, content_type);
+
+        // Handle content-length and transfer-encoding
         let has_transfer_encoding = headers.contains_key(header::TRANSFER_ENCODING);
         if !has_transfer_encoding {
             let content_length = body.size_hint().exact().unwrap_or(0);
             response = response.header(header::CONTENT_LENGTH, content_length);
         }
 
-        for (name, value) in headers {
+        // Build base response with body
+        let mut response = response.body(body)?;
+
+        // Forward response headers from backend
+        response = self.forward_response_headers(response, &headers);
+
+        // Forward necessary request headers
+        for (name, value) in request_headers {
             if let Some(name) = name {
-                if name != header::CONTENT_LENGTH
-                    && name != header::TRANSFER_ENCODING
-                    && name != header::CONNECTION
-                {
-                    response = response.header(name, value);
+                if name.as_str().starts_with("X-Forwarded-") || name.as_str() == "Host" {
+                    debug!(?name, ?value, "Forwarding request header");
+                    response.headers_mut().insert(name, value);
                 }
             }
         }
 
-        let response = response.body(body)?;
-        debug!(status = ?response.status(), "Built final response");
+        debug!(
+            status = ?response.status(),
+            content_type = ?response.headers().get(header::CONTENT_TYPE),
+            "Built final response"
+        );
         let response_headers = response.headers().clone();
         debug!("Sending response with headers: {:#?}", response_headers);
 
@@ -148,19 +195,25 @@ impl RedirectHandler {
     #[instrument(skip(self, request), fields(request_id = %uuid::Uuid::new_v4()))]
     pub async fn handle_request(
         &self,
-        request: Request<Body>,
+        mut request: Request<Body>,
     ) -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync>> {
         let start_time = Instant::now();
-        let headers = request.headers();
+        let headers = request.headers().clone();
+        let method = request.method().clone();
+        let query = request
+            .uri()
+            .query()
+            .map(|q| format!("?{}", q))
+            .unwrap_or_default();
 
-        if !self.is_traefik_request(headers) {
-            warn!("Request is not from traefik");
+        if !self.is_traefik_request(&headers) {
+            warn!(?headers, "Request is not from traefik");
             return Ok(Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body(Body::empty())?);
         }
 
-        let traefik_data = match TraefikData::try_from(headers) {
+        let traefik_data = match TraefikData::try_from(&headers) {
             Ok(data) => {
                 debug!(?data, "Successfully parsed Traefik data");
                 data
@@ -178,26 +231,46 @@ impl RedirectHandler {
         } else {
             format!("http://{}", traefik_data.service_addr)
         };
+
         let backend_url = format!(
-            "{}{}",
+            "{}{}{}",
             backend_url,
-            traefik_data.request_path.unwrap_or("/".to_string())
+            traefik_data.request_path.unwrap_or("/".to_string()),
+            query
         );
+
         info!(?backend_url, "Making backend request");
 
         let client = Self::new_client(&self.config);
 
-        let backend_req = client.get(&backend_url);
-        let backend_req = if self.config.forward_headers {
-            self.forward_headers(backend_req, headers)
+        let mut backend_req = client.request(method.clone(), &backend_url);
+
+        // Forward the request body for POST/PUT etc.
+        if method != reqwest::Method::GET && method != reqwest::Method::HEAD {
+            let body = std::mem::replace(request.body_mut(), Body::empty());
+            let body_bytes = axum::body::to_bytes(body, usize::MAX).await.map_err(|e| {
+                error!(?e, "Failed to read request body");
+                Box::new(e) as Box<dyn std::error::Error + Send + Sync>
+            })?;
+
+            backend_req = backend_req.body(body_bytes);
+        }
+
+        let mut backend_req = if self.config.forward_headers {
+            self.forward_request_headers(backend_req, &headers)
         } else {
             backend_req
         };
 
+        // Add Accept header if not present
+        if !headers.contains_key(header::ACCEPT) {
+            backend_req = backend_req.header(header::ACCEPT, "*/*");
+        }
+
         let result = match backend_req.send().await {
             Ok(resp) => {
                 debug!(status = ?resp.status(), "Received backend response");
-                self.build_response(resp).await
+                self.build_response(resp, request).await
             }
             Err(e) => {
                 error!(?e, "Backend request failed");

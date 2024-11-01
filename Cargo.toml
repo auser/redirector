@@ -30,6 +30,7 @@ metrics = "0.24.0"
 prometheus = "0.13.4"
 axum-prometheus = "0.7.0"
 openssl = { version = "0.10", features = ["vendored"] }
+hyper = "1.0"
 
 
 [dev-dependencies]

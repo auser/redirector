@@ -42,6 +42,8 @@ pub struct RedirectConfig {
     pub forward_headers: bool,
     #[serde(default = "default_match_header")]
     pub match_header: String,
+    #[serde(default = "default_allow_location_header")]
+    pub allow_location_header: String,
 }
 
 impl Default for RedirectConfig {
@@ -50,6 +52,7 @@ impl Default for RedirectConfig {
             max_redirects: default_max_redirects(),
             forward_headers: default_forward_headers(),
             match_header: default_match_header(),
+            allow_location_header: default_allow_location_header(),
         }
     }
 }
@@ -75,9 +78,11 @@ fn default_forward_headers() -> bool {
     true
 }
 fn default_match_header() -> String {
-    "x-forwarded-server".to_string()
+    "X-Forwarded-Server".to_string()
 }
-
+fn default_allow_location_header() -> String {
+    "X-Allow-Location".to_string()
+}
 fn default_host() -> String {
     "0.0.0.0".to_string()
 }

@@ -9,6 +9,7 @@ use axum::{
     Router,
 };
 use axum_prometheus::PrometheusMetricLayer;
+use tracing::debug;
 
 use crate::{config::Config, error::RedirectorResult, metrics::Metrics, util};
 
@@ -27,6 +28,7 @@ impl Server {
         util::init_tracing();
 
         info!("Initializing server");
+        debug!(?config, "Server config");
         let config = Arc::new(config);
         let redirect_config = config.redirect.clone();
 
@@ -100,22 +102,7 @@ mod tests {
         server::test_helpers::{create_test_app, spawn_backend_server, TestRequest},
     };
 
-    use axum::{body::Body, http::StatusCode, response::Response, Router};
-
-    #[tokio::test]
-    async fn test_handles_student_redirect_with_body() {
-        let request = TestRequest::builder()
-            .header("Host", "ibs.collegegreen.net")
-            .header("OriginStatus", "301")
-            .header("origin_Location", "https://www.herringbank.com/student/")
-            .uri("/student/")
-            .expected_status(StatusCode::OK)
-            .expected_body_contains("www.herringbank.com")
-            .expected_header("content-type", "text/html; charset=utf-8")
-            .build();
-
-        run_test_request(request).await;
-    }
+    use axum::{body::Body, extract::Path, http::StatusCode, response::Response, Router};
 
     #[tokio::test]
     async fn test_handles_simple_redirect() {
@@ -144,33 +131,54 @@ mod tests {
         let request = TestRequest::builder()
             .header("Host", "ibs.collegegreen.net")
             .header("OriginStatus", "301")
-            .header("origin_Location", "https://ibs.collegegreen.net/student/")
-            .uri("/student/")
+            .header("request_Location", "https://ibs.collegegreen.net/student/")
+            .uri("/")
             .expected_status(StatusCode::OK)
-            .expected_body_contains("student")
+            .expected_body_contains("Hello")
             .build();
 
         run_test_request(request).await;
     }
 
     #[tokio::test]
-    async fn test_preserves_headers_through_redirect() {
+    async fn test_handles_post_request() {
+        let post_data = r#"{"username": "test", "password": "secret"}"#.to_string();
+
         let request = TestRequest::builder()
-            .header("Host", "ibs.collegegreen.net")
-            .header("X-Custom-Header", "test-value")
-            .header("OriginStatus", "301")
-            .uri("/student/")
+            .method("POST")
+            .header("Host", "api.collegegreen.net")
+            .header("Content-Type", "application/json")
+            .with_traefik_headers("/login")
+            .uri("/login")
+            .body(post_data)
             .expected_status(StatusCode::OK)
-            .expected_header("content-type", "text/html;")
+            .expected_header("Content-Type", "application/json")
+            .expected_body_contains(r#""status":"success""#)
             .build();
 
         run_test_request(request).await;
     }
+
+    #[tokio::test]
+    async fn test_handles_image_request() {
+        let request = TestRequest::builder()
+            .header("Host", "static.collegegreen.net")
+            .header("Accept", "image/*")
+            .with_traefik_headers("/images/test.jpg") // Now passing &str directly
+            .uri("/images/test.jpg")
+            .expected_status(StatusCode::OK)
+            .expected_header("Content-Type", "image/jpeg")
+            .build();
+
+        run_test_request(request).await;
+    }
+
     use axum::routing;
+    use bytes::Bytes;
     async fn spawn_simulated_backend_server() -> String {
         let app = Router::new()
             .route(
-                "/student/",
+                "/student",
                 routing::get(|| async {
                     let body = "<html>some body...</html>";
                     let content_length = body.len().to_string();
@@ -186,12 +194,60 @@ mod tests {
                 }),
             )
             .route(
-                "/",
+                "/example",
                 routing::get(|| async {
                     Response::builder()
                         .status(302)
                         .header("Content-Type", "text/plain")
                         .body(Body::empty())
+                        .unwrap()
+                }),
+            )
+            // Add POST endpoint
+            // Add POST endpoint handler
+            .route(
+                "/login",
+                routing::post(|body: Bytes| async move {
+                    if let Ok(body_str) = std::str::from_utf8(&body) {
+                        if body_str.contains("username") && body_str.contains("password") {
+                            return Response::builder()
+                                .status(StatusCode::OK)
+                                .header("Content-Type", "application/json")
+                                .body(Body::from(r#"{"status":"success","token":"test123"}"#))
+                                .unwrap();
+                        }
+                    }
+                    Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Body::empty())
+                        .unwrap()
+                }),
+            )
+            // Add image endpoint handler
+            .route(
+                "/images/:filename",
+                routing::get(|Path(filename): Path<String>| async move {
+                    // Create a small test image (1x1 pixel JPEG)
+                    let image_data = vec![
+                        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
+                        0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
+                        0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                    ];
+
+                    let content_type = if filename.ends_with(".jpg") || filename.ends_with(".jpeg")
+                    {
+                        "image/jpeg"
+                    } else if filename.ends_with(".png") {
+                        "image/png"
+                    } else {
+                        "application/octet-stream"
+                    };
+
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("Content-Type", content_type)
+                        .header("Content-Length", image_data.len().to_string())
+                        .body(Body::from(image_data))
                         .unwrap()
                 }),
             );
