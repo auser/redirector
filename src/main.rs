@@ -1,13 +1,7 @@
-use redirector::{config::Config, error::RedirectorResult, server::create_server};
+use redirector::{cli::run_cli, error::RedirectorResult};
 
-// Example usage in your main.rs
 #[tokio::main]
 async fn main() -> RedirectorResult<()> {
-    let config = Config::load()?;
-
-    let server = create_server(config)?;
-
-    server.serve().await?;
-
+    run_cli().await?;
     Ok(())
 }

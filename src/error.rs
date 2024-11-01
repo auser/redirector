@@ -12,4 +12,6 @@ pub enum RedirectorError {
     Bind(#[from] std::io::Error),
     #[error("Failed to parse header: {0}")]
     HeaderParsing(#[from] Box<dyn std::error::Error + Send + Sync>),
+    #[error("Config parsing error: {0}")]
+    ConfigParsing(#[from] serde_yaml::Error),
 }

@@ -32,8 +32,8 @@ prometheus = "0.13.4"
 axum-prometheus = "0.7.0"
 openssl = { version = "0.10", features = ["vendored"] }
 hyper = "1.0"
-vergen = "9.0.1"
 vergen-git2 = "1.0.1"
+clap = { version = "4.5.20", features = ["derive"] }
 
 
 [dev-dependencies]
@@ -46,6 +46,7 @@ hyper = "1.0"
 openssl-sys = { version = "0.9", features = ["vendored"] }
 # All features enabled
 vergen-git2 = { version = "1.0.0", features = ["build", "si"] }
+chrono = "0.4"
 
 
 [profile.release]

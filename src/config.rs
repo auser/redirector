@@ -111,10 +111,14 @@ fn default_state_ttl() -> u64 {
 }
 
 impl Config {
-    pub fn load() -> RedirectorResult<Self> {
+    pub fn load(config_path: Option<String>) -> RedirectorResult<Self> {
         // Try loading from config file first
-        let config_path =
-            std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config/config.yaml".to_string());
+        let config_path = match config_path {
+            Some(path) => path.to_string(),
+            None => {
+                std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config/config.yaml".to_owned())
+            }
+        };
 
         let mut config = if Path::new(&config_path).exists() {
             Config::from_file(&config_path)?
@@ -133,6 +137,12 @@ impl Config {
             std::fs::read_to_string(path).map_err(|e| ConfigError::FileError(e.to_string()))?;
 
         serde_yaml::from_str(&contents).map_err(|e| ConfigError::ParseError(e.to_string()))
+    }
+
+    pub fn load_from_path(path: &str) -> RedirectorResult<Self> {
+        let file = std::fs::File::open(path)?;
+        let config = serde_yaml::from_reader(file)?;
+        Ok(config)
     }
 
     fn update_from_env(&mut self) {
