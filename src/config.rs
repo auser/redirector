@@ -190,7 +190,7 @@ impl Default for Config {
 
 pub fn get_version() -> String {
     let system_name =
-        std::env::var("VERGEN_SYSINFO_NAME").unwrap_or_else(|_| "unknown".to_string());
+        std::env::var("VERGEN_SYSINFO_NAME").unwrap_or_else(|_| "sysinfo unknown".to_string());
     let branch = std::env::var("VERGEN_GIT_BRANCH").unwrap_or_else(|_| "main".to_string());
     let sha = std::env::var("VERGEN_GIT_SHA").unwrap_or_else(|_| "unknown".to_string());
     let time = std::env::var("VERGEN_BUILD_TIMESTAMP").unwrap_or_else(|_| "unknown".to_string());

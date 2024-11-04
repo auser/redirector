@@ -20,6 +20,7 @@ WORKDIR /build
 
 # Copy manifests
 COPY Cargo.toml Cargo.lock ./
+COPY build.rs ./
 
 # Cache dependencies
 RUN mkdir src && \
@@ -29,6 +30,8 @@ RUN mkdir src && \
 
 # Copy source code
 COPY src src/
+COPY build.rs ./build.rs
+
 
 # Build the application with optimizations
 RUN cargo build --release
