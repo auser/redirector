@@ -99,6 +99,15 @@ impl RedirectHandler {
             .expect("Failed to build HTTP client")
     }
 
+    fn new_non_redirect_client(_config: &RedirectConfig) -> Client {
+        Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .expect("Failed to build HTTP client")
+    }
+
     pub fn construct_backend_url(&self, base_url: &str, fallback_addr: &str, path: &str) -> String {
         let base_url = if cfg!(test) {
             // In test environment, keep HTTP
@@ -172,7 +181,9 @@ impl RedirectHandler {
                 .strip_prefix("downstream_")
                 .unwrap_or(header_name);
 
-            if self.should_forward_request_header(header_name) ||
+            if header_name == "cookie" ||
+                header_name == "authorization" ||
+                self.should_forward_request_header(header_name) ||
                header_name.starts_with("If-") ||  // Forward cache headers
                header_name == "Cache-Control"
             {
@@ -230,7 +241,7 @@ impl RedirectHandler {
         response
     }
 
-    #[instrument(skip(self, resp))]
+    #[instrument(skip(self, resp, request))]
     async fn build_response(
         &self,
         resp: reqwest::Response,
@@ -329,15 +340,15 @@ impl RedirectHandler {
         let mut response = Response::builder().status(status);
 
         // Forward all headers from backend response
-        for (key, value) in headers.iter() {
+        for (key, value) in request_headers.iter().chain(headers.iter()) {
             debug!(?key, ?value, "Forwarding response header in pass-through");
             response = response.header(key, value);
+            if key.as_str().to_lowercase() == "set-cookie" {
+                debug!("Found Set-Cookie header: {:?}", value);
+            }
         }
 
-        // Forward request headers
-        for (key, value) in request_headers.iter() {
-            response = response.header(key, value);
-        }
+        // Extra debug for cookie handling
 
         Ok(response.body(Body::from(body))?)
     }
@@ -387,7 +398,11 @@ impl RedirectHandler {
 
         info!(?backend_url, "Making backend request");
 
-        let client = Self::new_client(&self.config);
+        let client = if self.is_pass_through(&headers) || true {
+            Self::new_non_redirect_client(&self.config)
+        } else {
+            Self::new_client(&self.config)
+        };
 
         let mut backend_req = client.request(method.clone(), &backend_url);
         // Forward the request body for POST/PUT etc.
@@ -433,7 +448,12 @@ impl RedirectHandler {
 
         let result = match backend_req.send().await {
             Ok(resp) => {
-                debug!(status = ?resp.status(), "Received backend response");
+                debug!(
+                    status = ?resp.status(),
+                    cookies = ?resp.headers().get_all("set-cookie").iter().collect::<Vec<_>>(),
+                    location = ?resp.headers().get("location"),
+                    "Received backend response"
+                );
                 if self.is_pass_through(&headers) {
                     debug!("Building pass-through response");
                     self.build_pass_through_response(resp, request).await
