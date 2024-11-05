@@ -13,6 +13,8 @@ redirect:
   max_redirects: 5
   forward_headers: true
   match_header: X-Forwarded-Server
+  stop_on_contains:
+    - "atlassian"
 
 app:
   account_id: "default"

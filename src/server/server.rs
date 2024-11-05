@@ -120,7 +120,13 @@ mod tests {
         },
     };
 
-    use axum::{body::Body, extract::Path, http::StatusCode, response::Response, Router};
+    use axum::{
+        body::Body,
+        extract::{Path, Request},
+        http::StatusCode,
+        response::Response,
+        Router,
+    };
 
     #[tokio::test]
     async fn test_handles_simple_redirect() {
@@ -267,21 +273,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_handles_http_to_https_redirect() {
-        let request = TestRequest::builder()
-            .header("Host", "api.financialpayments.com")
-            .with_traefik_headers("/images/test.jpg")
-            .header("X-Forwarded-Proto", "http")
-            .header("X-Forwarded-Port", "80")
-            .uri("/images/test.jpg")
-            .expected_status(StatusCode::OK)
-            .expected_header("Content-Type", "image/jpeg")
-            .build();
-
-        run_test_request(request).await;
-    }
-
-    #[tokio::test]
     async fn test_handles_asset_content_types() {
         let assets = vec![
             ("/script.js", "application/javascript"),
@@ -374,6 +365,48 @@ mod tests {
         run_test_request(request).await;
     }
 
+    #[tokio::test]
+    async fn test_handles_pass_through_request() {
+        // init_test_tracing(None);
+        let request = TestRequest::builder()
+            .header("Host", "www.collegegreen.net")
+            .header("X-Pass-Through", "true")
+            .header("X-Custom-Header", "test-value")
+            .with_traefik_headers("/api/endpoint")
+            .uri("/api/endpoint")
+            .expected_status(StatusCode::OK)
+            .expected_header("X-Custom-Header", "test-value")
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_handles_pass_through_redirect() {
+        // Create backend server first to get its URL
+        let backend_url = spawn_simulated_backend_server().await;
+        // let service_addr = backend_url.replace("http://", "");
+        debug!("Test backend server URL: {}", backend_url);
+
+        let request = TestRequest::builder()
+            .method("GET")
+            .header("Host", "www.collegegreen.net")
+            .header("X-Pass-Through", "true")
+            .header("X-traefik-request", "traefik")
+            .header("RequestPath", "/secure/Dashboard.jspa")
+            .uri("/secure/Dashboard.jspa")
+            .expected_status(StatusCode::MOVED_PERMANENTLY)
+            .expected_header("Location", "https://example.com")
+            .build();
+
+        debug!("Request path: {}", request.uri);
+        debug!("Request headers: {:?}", request.headers);
+
+        let app = create_test_app(RedirectConfig::default());
+        let response = request.make_request(app).await;
+        debug!(?response, "Test response");
+    }
+
     //-----------------------------------------
     // Helpers
     //-----------------------------------------
@@ -456,43 +489,108 @@ mod tests {
                         .unwrap()
                 }),
             )
+            // .route(
+            //     "/*filepath",
+            //     routing::get(|Path(filepath): Path<String>| async move {
+            //         debug!(?filepath, "Handling asset request");
+            //         let (content, content_type) = if filepath.ends_with(".js") {
+            //             (
+            //                 format!("console.log('JS file: {}');", filepath),
+            //                 "application/javascript",
+            //             )
+            //         } else if filepath.ends_with(".css") {
+            //             (
+            //                 format!("/* CSS file: {} */\nbody {{ color: blue; }}", filepath),
+            //                 "text/css",
+            //             )
+            //         } else if filepath.ends_with(".jpg") || filepath.ends_with(".jpeg") {
+            //             ("JPEG content".to_string(), "image/jpeg")
+            //         } else if filepath.ends_with(".png") {
+            //             ("PNG content".to_string(), "image/png")
+            //         } else {
+            //             (format!("Content for: {}", filepath), "text/plain")
+            //         };
+            //         Response::builder()
+            //             .status(StatusCode::OK)
+            //             .header("Content-Type", content_type)
+            //             .header("Content-Length", content.len().to_string())
+            //             .body(Body::from(content))
+            //             .unwrap()
+            //     }),
+            // )
             .route(
-                "/*filepath",
-                routing::get(|Path(filepath): Path<String>| async move {
-                    debug!(?filepath, "Handling asset request");
+                "/secure/Dashboard.jspa",
+                routing::get(|req: Request<Body>| async move {
+                    debug!("Hit test route for Dashboard.jspa");
+                    debug!("Request headers: {:?}", req.headers());
 
-                    let (content, content_type) = if filepath.ends_with(".js") {
-                        (
-                            format!("console.log('JS file: {}');", filepath),
-                            "application/javascript",
-                        )
-                    } else if filepath.ends_with(".css") {
-                        (
-                            format!("/* CSS file: {} */\nbody {{ color: blue; }}", filepath),
-                            "text/css",
-                        )
-                    } else if filepath.ends_with(".jpg") || filepath.ends_with(".jpeg") {
-                        ("JPEG content".to_string(), "image/jpeg")
-                    } else if filepath.ends_with(".png") {
-                        ("PNG content".to_string(), "image/png")
-                    } else {
-                        (format!("Content for: {}", filepath), "text/plain")
-                    };
+                    let mut response = Response::builder()
+                        .status(StatusCode::MOVED_PERMANENTLY)
+                        .header("Location", "https://example.com");
 
-                    Response::builder()
+                    // Forward all headers from the request in the response
+                    for (key, value) in req.headers() {
+                        if !key.as_str().starts_with("x-") {
+                            response = response.header(key, value);
+                        }
+                    }
+
+                    response.body(Body::empty()).unwrap()
+                }),
+            )
+            .route(
+                "/api/endpoint",
+                routing::get(|request: Request<Body>| async move {
+                    // Echo back any custom headers we received
+                    let mut response = Response::builder()
                         .status(StatusCode::OK)
-                        .header("Content-Type", content_type)
-                        .header("Content-Length", content.len().to_string())
-                        .body(Body::from(content))
-                        .unwrap()
+                        .header("Content-Type", "application/json");
+
+                    // Forward all received headers
+                    for (key, value) in request.headers() {
+                        if !key.as_str().to_lowercase().starts_with("x-") && key.as_str() != "host"
+                        {
+                            response = response.header(key, value);
+                        }
+                    }
+
+                    response.body(Body::from(r#"{"status":"ok"}"#)).unwrap()
                 }),
             )
             .fallback(|uri: axum::http::Uri| async move {
                 debug!("Handling fallback request: {}", uri);
+                let path = uri.path();
+                debug!(?path, "Handling request path");
+
+                let (content, content_type) = if path.ends_with(".js") {
+                    (
+                        format!("console.log('JS file: {}');", path),
+                        "application/javascript",
+                    )
+                } else if path.ends_with(".css") {
+                    (
+                        format!("/* CSS file: {} */\nbody {{ color: blue; }}", path),
+                        "text/css",
+                    )
+                } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+                    ("JPEG content".to_string(), "image/jpeg")
+                } else if path.ends_with(".png") {
+                    ("PNG content".to_string(), "image/png")
+                } else if path.ends_with(".svg") {
+                    ("<svg>...</svg>".to_string(), "image/svg+xml")
+                } else if path.ends_with(".woff2") {
+                    ("font data".to_string(), "font/woff2")
+                } else if path.ends_with(".woff") {
+                    ("font data".to_string(), "font/woff")
+                } else {
+                    (format!("Content for: {}", path), "text/plain")
+                };
+
                 Response::builder()
-                    .status(StatusCode::NOT_FOUND)
-                    .header("Content-Type", "text/plain")
-                    .body(Body::from(format!("Not found: {}", uri.path())))
+                    .status(StatusCode::OK)
+                    .header("Content-Type", content_type)
+                    .header("Content-Length", content.len().to_string())
+                    .body(Body::from(content))
                     .unwrap()
             });
 

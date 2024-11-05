@@ -39,12 +39,25 @@ impl TestRequestResponse {
             body_bytes: Some(body_bytes),
         })
     }
-
     pub fn assert_header(&self, key: &str, value: &str) {
-        let header = self.response.headers().get(key).expect("header not found");
-        let header_str = header.to_str().expect("header is not valid UTF-8");
-        let header_str = header_str.to_lowercase();
-        assert!(header_str.contains(&value.to_lowercase()));
+        let header = self
+            .response
+            .headers()
+            .get(key)
+            .unwrap_or_else(|| panic!("Header '{}' not found", key));
+        let header_str = header
+            .to_str()
+            .unwrap_or_else(|_| panic!("Header '{}' is not valid UTF-8", key))
+            .to_lowercase();
+        let value = value.to_lowercase();
+
+        assert!(
+            header_str.contains(&value),
+            "Header '{}' value mismatch.\nExpected to contain: {}\nActual: {}",
+            key,
+            value,
+            header_str
+        );
     }
 
     pub fn assert_header_missing(&self, key: &str) {
@@ -195,9 +208,9 @@ impl TestRequestBuilder {
             .header("X-traefik-request", "traefik")
             .header("ServiceAddr", "localhost:3000")
             .header("ServiceUrl", "http://localhost:3000") // Use HTTP for tests
+            .header("RequestPath", path)
             .header("X-Forwarded-Proto", "https") // But still simulate HTTPS frontend
-            .header("X-Forwarded-Port", "443")
-            .header("RequestPath", path);
+            .header("X-Forwarded-Port", "443");
         self
     }
 

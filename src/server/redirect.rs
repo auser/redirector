@@ -3,23 +3,46 @@ use axum::{
     body::{Body, HttpBody},
     http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode},
 };
+use once_cell::sync::Lazy;
 use reqwest::Client;
-use std::{collections::HashSet, sync::Arc, time::Instant};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 use tracing::{debug, error, info, instrument, warn};
 
-const EXCLUDED_HEADERS: [&str; 4] = [
-    "connection",
-    "content-length",
-    "transfer-encoding",
-    "content-type",
-];
+static CONTENT_TYPES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
+    let mut m = HashMap::new();
+    // Scripts
+    m.insert("js", "application/javascript");
+    // Styles
+    m.insert("css", "text/css");
+    // Images
+    m.insert("jpg", "image/jpeg");
+    m.insert("jpeg", "image/jpeg");
+    m.insert("png", "image/png");
+    m.insert("svg", "image/svg+xml");
+    m.insert("webp", "image/webp");
+    m.insert("ico", "image/x-icon");
+    // Documents
+    m.insert("json", "application/json");
+    m.insert("xml", "application/xml");
+    m.insert("txt", "text/plain");
+    m.insert("pdf", "application/pdf");
+    m.insert("zip", "application/zip");
+    // Fonts
+    m.insert("woff", "font/woff");
+    m.insert("woff2", "font/woff2");
+    m.insert("ttf", "font/ttf");
+    m.insert("eot", "font/eot");
+    m.insert("otf", "font/otf");
+    m.insert("html", "text/html");
+    m
+});
 
 #[derive(Clone)]
 pub struct RedirectHandler {
     config: Arc<RedirectConfig>,
-    #[allow(unused)]
-    client: Arc<Client>,
-    excluded_headers: Arc<HashSet<String>>,
+    // #[allow(unused)]
+    // client: Arc<Client>,
+    // excluded_headers: Arc<HashSet<String>>,
     metrics: Arc<Metrics>,
 }
 
@@ -30,43 +53,16 @@ impl RedirectHandler {
         let max_redirects = config.max_redirects;
         info!(?max_redirects, "Creating new RedirectHandler");
 
-        let client = Self::new_client(&config);
-
-        let mut excluded_headers = HashSet::new();
-        for header in EXCLUDED_HEADERS.iter() {
-            excluded_headers.insert(header.to_string());
-        }
-        excluded_headers.insert(config.match_header.to_lowercase());
-        info!(?excluded_headers, "Excluded headers");
-
         Self {
             config: Arc::new(config),
-            client: Arc::new(client),
-            excluded_headers: Arc::new(excluded_headers),
+            // client: Arc::new(client),
             metrics,
         }
     }
 
-    // fn new_client(config: &RedirectConfig) -> Client {
-    //     let max_redirects = config.max_redirects;
-    //     Client::builder()
-    //         .redirect(reqwest::redirect::Policy::custom(move |attempt| {
-    //             if attempt.previous().len() >= max_redirects as usize {
-    //                 debug!("Max redirects reached, stopping");
-    //                 attempt.stop()
-    //             } else {
-    //                 debug!("Following redirect");
-    //                 attempt.follow()
-    //             }
-    //         }))
-    //         .danger_accept_invalid_certs(true)
-    //         .danger_accept_invalid_hostnames(true)
-    //         .build()
-    //         .expect("Failed to build HTTP client")
-    // }
-
     fn new_client(config: &RedirectConfig) -> Client {
         let max_redirects = config.max_redirects;
+        let stop_on_contains = config.stop_on_contains.clone();
         Client::builder()
             .redirect(reqwest::redirect::Policy::custom(move |attempt| {
                 if attempt.previous().len() >= max_redirects as usize {
@@ -78,8 +74,10 @@ impl RedirectHandler {
                         let original_path = original_url.path();
                         debug!(?original_path, "Original request path");
 
-                        // Check if we're being redirected to root
-                        if attempt.url().path() == "/" {
+                        if stop_on_contains.iter().any(|s| original_path.contains(s)) {
+                            debug!("Stopping on contains");
+                            attempt.stop()
+                        } else if attempt.url().path() == "/" {
                             debug!("Preserving original path in redirect");
                             let host = attempt.url().host_str().unwrap_or_default();
                             let new_url = format!("https://{}{}", host, original_path);
@@ -90,6 +88,7 @@ impl RedirectHandler {
                             attempt.follow()
                         }
                     } else {
+                        debug!("Following standard redirect");
                         attempt.follow()
                     }
                 }
@@ -138,8 +137,22 @@ impl RedirectHandler {
     }
 
     #[instrument(skip(self))]
+    fn is_pass_through(&self, headers: &HeaderMap) -> bool {
+        headers
+            .get(&self.config.pass_through_header)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == "true")
+            .unwrap_or(false)
+    }
+
+    #[instrument(skip(self))]
     fn should_forward_request_header(&self, header_name: &str) -> bool {
-        !self.excluded_headers.contains(&header_name.to_lowercase())
+        let lowercased = header_name.to_lowercase();
+        !lowercased.starts_with("x-forwarded-")
+            && !lowercased.starts_with("x-real-ip")
+            && !lowercased.starts_with("if-")
+            && lowercased != "content-type"
+            && lowercased != "content-length"
     }
 
     #[instrument(skip(self, backend_req, headers))]
@@ -227,25 +240,16 @@ impl RedirectHandler {
         let headers = resp.headers().clone();
         let request_headers = request.headers().clone();
 
-        // Get content type from response or preserve original
-        // Get content type from response and preserve it exactly as received
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .cloned()
             .unwrap_or_else(|| {
-                // Set default content type based on path extension
                 let path = request.uri().path().to_lowercase();
-                if path.ends_with(".js") {
-                    HeaderValue::from_static("application/javascript")
-                } else if path.ends_with(".css") {
-                    HeaderValue::from_static("text/css")
-                } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
-                    HeaderValue::from_static("image/jpeg")
-                } else if path.ends_with(".png") {
-                    HeaderValue::from_static("image/png")
-                } else {
-                    HeaderValue::from_static("application/octet-stream")
-                }
+                let extension = path.split('.').last().unwrap_or("");
+                let mime_type = CONTENT_TYPES
+                    .get(extension)
+                    .unwrap_or(&"application/octet-stream");
+                HeaderValue::from_static(mime_type)
             });
 
         // For 304 responses, we don't need to get the body
@@ -277,16 +281,28 @@ impl RedirectHandler {
         // Forward necessary request headers
         for (name, value) in request_headers {
             if let Some(name) = name {
-                if name.as_str().starts_with("X-Forwarded-")
-                    || name.as_str() == "Host"
-                    || name.as_str().starts_with("If-")
-                {
-                    // Forward cache headers from request
+                if self.should_forward_request_header(name.as_str()) {
                     debug!(?name, ?value, "Forwarding request header");
                     response.headers_mut().insert(name, value);
                 }
             }
         }
+
+        // for (name, value) in request_headers {
+        //     if let Some(name) = name {
+        //         let lowercased_name = name.as_str().to_lowercase();
+        //         if !lowercased_name.starts_with("x-forwarded-")
+        //             // && name.as_str() != "Host"
+        //             && !lowercased_name.starts_with("sec-")
+        //             && !lowercased_name.starts_with("x-real-ip")
+        //             && !lowercased_name.starts_with("if-")
+        //         {
+        //             // Forward cache headers from request
+        //             debug!(?name, ?value, "Forwarding request header");
+        //             response.headers_mut().insert(name, value);
+        //         }
+        //     }
+        // }
 
         debug!(
             status = ?response.status(),
@@ -297,6 +313,33 @@ impl RedirectHandler {
         debug!("Sending response with headers: {:#?}", response_headers);
 
         Ok(response)
+    }
+
+    #[instrument(skip(self, resp))]
+    async fn build_pass_through_response(
+        &self,
+        resp: reqwest::Response,
+        request: Request<Body>,
+    ) -> Result<Response<Body>, Box<dyn std::error::Error + Send + Sync>> {
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let request_headers = request.headers().clone();
+        let body = resp.bytes().await?;
+
+        let mut response = Response::builder().status(status);
+
+        // Forward all headers from backend response
+        for (key, value) in headers.iter() {
+            debug!(?key, ?value, "Forwarding response header in pass-through");
+            response = response.header(key, value);
+        }
+
+        // Forward request headers
+        for (key, value) in request_headers.iter() {
+            response = response.header(key, value);
+        }
+
+        Ok(response.body(Body::from(body))?)
     }
 
     #[instrument(skip(self, request), fields(request_id = %uuid::Uuid::new_v4()))]
@@ -355,14 +398,33 @@ impl RedirectHandler {
                 Box::new(e) as Box<dyn std::error::Error + Send + Sync>
             })?;
 
+            debug!("Sending request body to backend: {:?}", body_bytes.len());
             backend_req = backend_req.body(body_bytes);
         }
 
-        let mut backend_req = if self.config.forward_headers {
-            self.forward_request_headers(backend_req, &headers)
-        } else {
-            backend_req
-        };
+        // Forward headers based on pass-through status
+        if self.is_pass_through(&headers) {
+            debug!("Pass-through request detected");
+            // For pass-through, forward all headers except internal traefik ones
+            backend_req = headers.iter().fold(backend_req, |req, (key, value)| {
+                let header_name = key.as_str().to_lowercase();
+                if !header_name.starts_with("x-traefik") && // Only exclude traefik internal headers
+                   header_name != self.config.match_header.to_lowercase() &&
+                   header_name != self.config.pass_through_header.to_lowercase()
+                {
+                    debug!(
+                        ?header_name,
+                        ?value,
+                        "Forwarding pass-through request header"
+                    );
+                    req.header(key, value)
+                } else {
+                    req
+                }
+            });
+        } else if self.config.forward_headers {
+            backend_req = self.forward_request_headers(backend_req, &headers);
+        }
 
         // Add Accept header if not present
         if !headers.contains_key(header::ACCEPT) {
@@ -372,7 +434,12 @@ impl RedirectHandler {
         let result = match backend_req.send().await {
             Ok(resp) => {
                 debug!(status = ?resp.status(), "Received backend response");
-                self.build_response(resp, request).await
+                if self.is_pass_through(&headers) {
+                    debug!("Building pass-through response");
+                    self.build_pass_through_response(resp, request).await
+                } else {
+                    self.build_response(resp, request).await
+                }
             }
             Err(e) => {
                 error!(?e, "Backend request failed");
@@ -408,5 +475,21 @@ impl RedirectHandler {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_should_forward_request_header() {
+        let handler = RedirectHandler::new(RedirectConfig::default(), Arc::new(Metrics::new()));
+
+        assert!(handler.should_forward_request_header("Host"));
+
+        assert!(!handler.should_forward_request_header("content-type"));
+        assert!(!handler.should_forward_request_header("content-length"));
+        assert!(!handler.should_forward_request_header("x-forwarded-for"));
     }
 }

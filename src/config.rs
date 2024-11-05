@@ -44,6 +44,10 @@ pub struct RedirectConfig {
     pub match_header: String,
     #[serde(default = "default_allow_location_header")]
     pub allow_location_header: String,
+    #[serde(default = "default_pass_through_header")]
+    pub pass_through_header: String,
+    #[serde(default = "default_stop_on_contains")]
+    pub stop_on_contains: Vec<String>,
 }
 
 impl Default for RedirectConfig {
@@ -53,6 +57,8 @@ impl Default for RedirectConfig {
             forward_headers: default_forward_headers(),
             match_header: default_match_header(),
             allow_location_header: default_allow_location_header(),
+            pass_through_header: default_pass_through_header(),
+            stop_on_contains: default_stop_on_contains(),
         }
     }
 }
@@ -82,6 +88,12 @@ fn default_match_header() -> String {
 }
 fn default_allow_location_header() -> String {
     "X-Allow-Location".to_string()
+}
+fn default_pass_through_header() -> String {
+    "X-Pass-Through".to_string()
+}
+fn default_stop_on_contains() -> Vec<String> {
+    vec!["atlassian".to_string()]
 }
 fn default_host() -> String {
     "0.0.0.0".to_string()

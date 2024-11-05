@@ -1432,6 +1432,7 @@ dependencies = [
  "lazy_static",
  "metrics 0.24.0",
  "mockito",
+ "once_cell",
  "openssl",
  "openssl-sys",
  "prometheus",
