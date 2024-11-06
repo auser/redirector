@@ -4,7 +4,7 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode},
 };
 use once_cell::sync::Lazy;
-use reqwest::Client;
+use reqwest::{Client, Url};
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -36,6 +36,13 @@ static CONTENT_TYPES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
     m.insert("html", "text/html");
     m
 });
+
+#[derive(Debug, Eq, PartialEq)]
+struct ParsedUrl {
+    scheme: String,
+    host: String,
+    port: Option<u16>,
+}
 
 #[derive(Clone)]
 pub struct RedirectHandler {
@@ -108,32 +115,122 @@ impl RedirectHandler {
             .expect("Failed to build HTTP client")
     }
 
-    pub fn construct_backend_url(&self, base_url: &str, fallback_addr: &str, path: &str) -> String {
-        let base_url = if cfg!(test) {
-            // In test environment, keep HTTP
-            if base_url.starts_with("http") {
-                base_url.to_string()
-            } else {
-                format!("http://{}", fallback_addr)
-            }
+    fn parse_url(base_url: &str) -> ParsedUrl {
+        // First try to parse with scheme
+        let with_scheme = if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+            format!("http://{}", base_url)
         } else {
-            // In production, use HTTPS
-            if base_url.starts_with("http") {
-                let mut url = base_url.to_string();
-                if url.starts_with("http://") {
-                    url = url.replace("http://", "https://");
-                }
-                url
-            } else {
-                format!("https://{}", fallback_addr)
-            }
+            base_url.to_string()
         };
 
-        if base_url.ends_with('/') {
-            format!("{}{}", &base_url[..base_url.len() - 1], path)
-        } else {
-            format!("{}{}", base_url, path)
+        match Url::parse(&with_scheme) {
+            Ok(url) => {
+                let scheme = if cfg!(test) {
+                    "http".to_string()
+                } else {
+                    "https".to_string()
+                };
+
+                ParsedUrl {
+                    scheme,
+                    host: url.host_str().unwrap_or(base_url).to_string(),
+                    port: url.port(),
+                }
+            }
+            Err(_) => {
+                // If URL parsing fails, try to split host:port manually
+                if let Some((host, port_str)) = base_url.rsplit_once(':') {
+                    if let Ok(port) = port_str.parse::<u16>() {
+                        return ParsedUrl {
+                            scheme: if cfg!(test) {
+                                "http".to_string()
+                            } else {
+                                "https".to_string()
+                            },
+                            host: host.to_string(),
+                            port: Some(port),
+                        };
+                    }
+                }
+
+                // If no port found or invalid, return just the host
+                ParsedUrl {
+                    scheme: if cfg!(test) {
+                        "http".to_string()
+                    } else {
+                        "https".to_string()
+                    },
+                    host: base_url.to_string(),
+                    port: None,
+                }
+            }
         }
+    }
+
+    pub fn construct_backend_url(
+        &self,
+        base_url: &str,
+        _fallback_addr: &str,
+        path: &str,
+    ) -> String {
+        let base_url = Self::parse_url(base_url);
+        let path = path.trim();
+
+        // Construct base URL
+        let mut backend_url = format!("{}://{}", base_url.scheme, base_url.host);
+        if let Some(port) = base_url.port {
+            backend_url = format!("{}:{}", backend_url, port);
+        }
+
+        // Remove trailing slashes from base URL
+        while backend_url.ends_with('/') {
+            backend_url.pop();
+        }
+
+        // Handle empty path
+        if path.is_empty() {
+            return backend_url;
+        }
+
+        // Check if this is an asset path
+        if let Some(extension) = std::path::Path::new(path).extension() {
+            if let Some(ext_str) = extension.to_str() {
+                if ext_str.to_lowercase() != "html" {
+                    let normalized_path = self.normalize_asset_path(path);
+                    debug!("Normalized asset path from {} to {}", path, normalized_path);
+                    return format!("{}{}", backend_url, normalized_path);
+                }
+            }
+        }
+
+        // Non-asset path handling
+        let path = path.trim_start_matches('/');
+        format!("{}/{}", backend_url, path)
+    }
+
+    fn normalize_asset_path(&self, path: &str) -> String {
+        let mut normalized = path.to_string();
+
+        // Only process if it's an asset (has extension that's not .html)
+        if let Some(extension) = std::path::Path::new(&normalized)
+            .extension()
+            .and_then(|ext| ext.to_str())
+        {
+            if extension.to_lowercase() != "html" {
+                // Strip configured base paths
+                for base_path in &self.config.strip_asset_paths {
+                    let base_pattern = format!("/{}/", base_path);
+                    normalized = normalized.replace(&base_pattern, "/");
+                }
+            }
+        }
+
+        // Ensure path starts with a slash
+        if !normalized.starts_with('/') {
+            normalized = format!("/{}", normalized);
+        }
+
+        normalized
     }
 
     #[instrument(skip(self, headers))]
@@ -155,23 +252,35 @@ impl RedirectHandler {
     }
 
     #[instrument(skip(self))]
-    fn should_forward_request_header(&self, header_name: &str) -> bool {
-        let lowercased = header_name.to_lowercase();
-        !lowercased.starts_with("x-forwarded-")
-            && !lowercased.starts_with("x-real-ip")
-            && !lowercased.starts_with("if-")
-            && lowercased != "content-type"
-            && lowercased != "content-length"
+    pub fn should_forward_request_header(&self, lowercased: &str) -> bool {
+        // Important security and session headers that must be forwarded
+        let critical_headers = [
+            "content-type",
+            "cookie",
+            "set-cookie",
+            "x-csrf-token",
+            "x-requested-with",
+            "origin",
+            "referer",
+            "authorization",
+            "host",
+            "cache-control",
+        ];
+
+        let blocked_headers = ["x-forwarded-", "x-real-ip", "if-", "content-", "x-traefik"];
+
+        let is_critical_header = critical_headers.contains(&lowercased);
+        let is_blocked_header = blocked_headers.iter().any(|h| lowercased.starts_with(h));
+
+        !is_blocked_header && is_critical_header
     }
 
     #[instrument(skip(self, backend_req, headers))]
     fn forward_request_headers(
         &self,
-        backend_req: reqwest::RequestBuilder,
+        mut backend_req: reqwest::RequestBuilder,
         headers: &HeaderMap,
     ) -> reqwest::RequestBuilder {
-        let mut req = backend_req;
-
         // Forward original headers
         for (key, value) in headers {
             let header_name = key.as_str();
@@ -181,20 +290,31 @@ impl RedirectHandler {
                 .strip_prefix("downstream_")
                 .unwrap_or(header_name);
 
-            if header_name == "cookie" ||
-                header_name == "authorization" ||
-                self.should_forward_request_header(header_name) ||
-               header_name.starts_with("If-") ||  // Forward cache headers
-               header_name == "Cache-Control"
-            {
+            let lowercased = header_name.to_lowercase();
+
+            // Special handling for content-type
+            if lowercased == "content-type" {
                 if let Ok(v) = value.to_str() {
-                    req = req.header(header_name, v);
+                    if v.starts_with("multipart/form-data") {
+                        debug!(?v, "Forwarding multipart content-type header");
+                        backend_req = backend_req.header(header_name, value);
+                        continue;
+                    }
+                }
+            }
+
+            // Always forward critical headers
+            if self.should_forward_request_header(&lowercased) {
+                if let Ok(v) = value.to_str() {
+                    debug!(?header_name, ?v, "Forwarding request header");
+                    backend_req = backend_req.header(header_name, v);
                 }
             }
         }
 
-        req
+        backend_req
     }
+
     #[instrument(skip(self))]
     fn should_forward_response_header(&self, header_name: &str) -> bool {
         !vec![
@@ -405,15 +525,31 @@ impl RedirectHandler {
         };
 
         let mut backend_req = client.request(method.clone(), &backend_url);
-        // Forward the request body for POST/PUT etc.
+
+        // Handle request body for POST/PUT etc.
         if method != reqwest::Method::GET && method != reqwest::Method::HEAD {
+            let content_type = headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+
             let body = std::mem::replace(request.body_mut(), Body::empty());
             let body_bytes = axum::body::to_bytes(body, usize::MAX).await.map_err(|e| {
                 error!(?e, "Failed to read request body");
                 Box::new(e) as Box<dyn std::error::Error + Send + Sync>
             })?;
 
-            debug!("Sending request body to backend: {:?}", body_bytes.len());
+            // For multipart form data, preserve the exact content-type with boundary
+            if content_type.starts_with("multipart/form-data") {
+                debug!(?content_type, "Forwarding multipart form data");
+                backend_req = backend_req.header(header::CONTENT_TYPE, content_type);
+            }
+
+            debug!(
+                content_type = ?content_type,
+                body_size = ?body_bytes.len(),
+                "Sending request body to backend"
+            );
             backend_req = backend_req.body(body_bytes);
         }
 
@@ -424,8 +560,8 @@ impl RedirectHandler {
             backend_req = headers.iter().fold(backend_req, |req, (key, value)| {
                 let header_name = key.as_str().to_lowercase();
                 if !header_name.starts_with("x-traefik") && // Only exclude traefik internal headers
-                   header_name != self.config.match_header.to_lowercase() &&
-                   header_name != self.config.pass_through_header.to_lowercase()
+           header_name != self.config.match_header.to_lowercase() &&
+           header_name != self.config.pass_through_header.to_lowercase()
                 {
                     debug!(
                         ?header_name,
@@ -506,10 +642,118 @@ mod tests {
     fn test_should_forward_request_header() {
         let handler = RedirectHandler::new(RedirectConfig::default(), Arc::new(Metrics::new()));
 
-        assert!(handler.should_forward_request_header("Host"));
+        assert!(handler.should_forward_request_header("host"));
 
         assert!(!handler.should_forward_request_header("content-type"));
         assert!(!handler.should_forward_request_header("content-length"));
         assert!(!handler.should_forward_request_header("x-forwarded-for"));
+    }
+
+    #[test]
+    fn test_parse_url() {
+        let test_cases = vec![
+            (
+                "http://example.com:8080",
+                ParsedUrl {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    port: Some(8080),
+                },
+            ),
+            (
+                "example.com:8080",
+                ParsedUrl {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    port: Some(8080),
+                },
+            ),
+            (
+                "example.com",
+                ParsedUrl {
+                    scheme: "http".to_string(),
+                    host: "example.com".to_string(),
+                    port: None,
+                },
+            ),
+            (
+                "localhost:3000",
+                ParsedUrl {
+                    scheme: "http".to_string(),
+                    host: "localhost".to_string(),
+                    port: Some(3000),
+                },
+            ),
+            (
+                "http://localhost:3000",
+                ParsedUrl {
+                    scheme: "http".to_string(),
+                    host: "localhost".to_string(),
+                    port: Some(3000),
+                },
+            ),
+        ];
+
+        for (input, expected) in test_cases {
+            let result = RedirectHandler::parse_url(input);
+            assert_eq!(
+                result, expected,
+                "Failed to parse URL '{}'. Expected {:?}, got {:?}",
+                input, expected, result
+            );
+        }
+    }
+
+    #[test]
+    fn test_asset_path_stripping() {
+        let config_yaml = r#"
+        maxRedirects: 5
+        matchHeader: "X-Traefik-Request"
+        passThrough_header: "X-Pass-Through"
+        stopOnContains: []
+        forwardHeaders: true
+        stripAssetPaths:
+          - collegeGreen
+          - webConfig
+        "#;
+
+        let config: RedirectConfig = serde_yaml::from_str(config_yaml).unwrap();
+        let handler = RedirectHandler::new(config, Arc::new(Metrics::new()));
+
+        let test_cases = vec![
+            // Strip collegeGreen from CSS path
+            (
+                "http://example.com",
+                "/collegeGreen/css/site.css",
+                "http://example.com/css/site.css",
+            ),
+            // Strip webConfig from JS path
+            (
+                "http://example.com",
+                "/webConfig/js/main.js",
+                "http://example.com/js/main.js",
+            ),
+            // Don't modify HTML files
+            (
+                "http://example.com",
+                "/collegeGreen/page.html",
+                "http://example.com/collegeGreen/page.html",
+            ),
+            // Handle nested paths
+            (
+                "http://example.com",
+                "/collegeGreen/deep/path/style.css",
+                "http://example.com/deep/path/style.css",
+            ),
+        ];
+
+        for (base_url, input_path, expected) in test_cases {
+            let result = handler.construct_backend_url(base_url, "", input_path);
+            assert_eq!(
+                result, expected,
+                "Failed for path '{}'. Expected {}, got {}",
+                input_path, expected, result
+            );
+        }
     }
 }

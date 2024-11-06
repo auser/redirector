@@ -15,6 +15,9 @@ redirect:
   match_header: X-Forwarded-Server
   stop_on_contains:
     - "atlassian"
+  stripAssetPaths:
+    - collegeGreen
+    - webConfig
 
 app:
   account_id: "default"

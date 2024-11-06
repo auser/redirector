@@ -1,18 +1,22 @@
 use crate::config::RedirectConfig;
 use crate::metrics::Metrics;
+use axum::routing;
 use axum::routing::any;
+use bytes::Bytes;
 use http_body_util::BodyExt;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{collections::HashMap, sync::Once};
+use tracing::debug;
 
-use axum::http::Request;
 use axum::{
     body::Body,
+    extract::{Path, Request},
     http::{HeaderMap, HeaderName, HeaderValue, Response},
-    routing::get,
     Router,
 };
+
+use axum::routing::get;
 use reqwest::StatusCode;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
@@ -103,11 +107,29 @@ impl TestRequestResponse {
     }
 }
 
+#[derive(Debug)]
+pub enum TestBody {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
+impl From<String> for TestBody {
+    fn from(s: String) -> Self {
+        TestBody::Text(s)
+    }
+}
+
+impl From<Vec<u8>> for TestBody {
+    fn from(v: Vec<u8>) -> Self {
+        TestBody::Binary(v)
+    }
+}
+
 pub struct TestRequest {
     pub headers: HeaderMap,
     pub method: &'static str,
     pub uri: &'static str,
-    pub body: Option<String>,
+    pub body: Option<TestBody>,
     pub expected_status: StatusCode,
     pub response: Option<TestRequestResponse>,
     pub expected_headers: Vec<(&'static str, &'static str)>,
@@ -141,8 +163,12 @@ impl TestRequest {
         for (key, value) in self.headers.iter() {
             req_builder = req_builder.header(key, value);
         }
+
         let body = if let Some(body) = &self.body {
-            Body::from(body.clone())
+            match body {
+                TestBody::Text(text) => Body::from(text.clone()),
+                TestBody::Binary(bytes) => Body::from(bytes.clone()),
+            }
         } else {
             Body::empty()
         };
@@ -176,7 +202,7 @@ pub struct TestRequestBuilder {
     headers: HeaderMap,
     method: Option<&'static str>,
     uri: Option<&'static str>,
-    body: Option<String>,
+    pub body: Option<TestBody>,
 
     expected_status: Option<StatusCode>,
     expected_body_contains: Option<&'static str>,
@@ -226,7 +252,7 @@ impl TestRequestBuilder {
         self
     }
 
-    pub fn body(mut self, body: impl Into<String>) -> Self {
+    pub fn body<T: Into<TestBody>>(mut self, body: T) -> Self {
         self.body = Some(body.into());
         self
     }
@@ -308,4 +334,248 @@ pub fn headers_from_json(json: Value) -> HeaderMap {
         header_map.insert(header_name, HeaderValue::from_str(&value).unwrap());
     }
     header_map
+}
+
+pub async fn spawn_simulated_backend_server() -> String {
+    let app = Router::new()
+        .route(
+            "/student",
+            routing::get(|| async {
+                let body = "<html>some body...</html>";
+                let content_length = body.len().to_string();
+                Response::builder()
+                    .status(301)
+                    .header("Location", "https://ibs.collegegreen.net/student/")
+                    .header("Content-Type", "text/html;")
+                    .header("Content-Length", content_length)
+                    .header("Server", "Apache")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(Body::from(body))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/example",
+            routing::get(|| async {
+                Response::builder()
+                    .status(302)
+                    .header("Content-Type", "text/plain")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        // Add POST endpoint
+        // Add POST endpoint handler
+        .route(
+            "/login",
+            routing::post(|body: Bytes| async move {
+                if let Ok(body_str) = std::str::from_utf8(&body) {
+                    if body_str.contains("username") && body_str.contains("password") {
+                        return Response::builder()
+                            .status(StatusCode::OK)
+                            .header("Content-Type", "application/json")
+                            .body(Body::from(r#"{"status":"success","token":"test123"}"#))
+                            .unwrap();
+                    }
+                }
+                Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        // Add image endpoint handler
+        .route(
+            "/images/:filename",
+            routing::get(|Path(filename): Path<String>| async move {
+                // Create a small test image (1x1 pixel JPEG)
+                let image_data = vec![
+                    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01,
+                    0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0xFF,
+                    0xFF, 0xFF, 0xFF, 0xFF,
+                ];
+
+                let content_type = if filename.ends_with(".jpg") || filename.ends_with(".jpeg") {
+                    "image/jpeg"
+                } else if filename.ends_with(".png") {
+                    "image/png"
+                } else {
+                    "application/octet-stream"
+                };
+
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", content_type)
+                    .header("Content-Length", image_data.len().to_string())
+                    .body(Body::from(image_data))
+                    .unwrap()
+            }),
+        )
+        // .route(
+        //     "/*filepath",
+        //     routing::get(|Path(filepath): Path<String>| async move {
+        //         debug!(?filepath, "Handling asset request");
+        //         let (content, content_type) = if filepath.ends_with(".js") {
+        //             (
+        //                 format!("console.log('JS file: {}');", filepath),
+        //                 "application/javascript",
+        //             )
+        //         } else if filepath.ends_with(".css") {
+        //             (
+        //                 format!("/* CSS file: {} */\nbody {{ color: blue; }}", filepath),
+        //                 "text/css",
+        //             )
+        //         } else if filepath.ends_with(".jpg") || filepath.ends_with(".jpeg") {
+        //             ("JPEG content".to_string(), "image/jpeg")
+        //         } else if filepath.ends_with(".png") {
+        //             ("PNG content".to_string(), "image/png")
+        //         } else {
+        //             (format!("Content for: {}", filepath), "text/plain")
+        //         };
+        //         Response::builder()
+        //             .status(StatusCode::OK)
+        //             .header("Content-Type", content_type)
+        //             .header("Content-Length", content.len().to_string())
+        //             .body(Body::from(content))
+        //             .unwrap()
+        //     }),
+        // )
+        .route(
+            "/secure/Dashboard.jspa",
+            routing::get(|req: Request<Body>| async move {
+                debug!("Hit test route for Dashboard.jspa");
+                debug!("Request headers: {:?}", req.headers());
+
+                let mut response = Response::builder()
+                    .status(StatusCode::MOVED_PERMANENTLY)
+                    .header("Location", "https://example.com");
+
+                // Forward all headers from the request in the response
+                for (key, value) in req.headers() {
+                    if !key.as_str().starts_with("x-") {
+                        response = response.header(key, value);
+                    }
+                }
+
+                response.body(Body::empty()).unwrap()
+            }),
+        )
+        .route(
+            "/upload",
+            routing::post(|headers: HeaderMap, _body: bytes::Bytes| async move {
+                // Verify required headers are present
+                let has_csrf = headers.contains_key("x-csrf-token");
+                let has_cookie = headers.contains_key("cookie");
+                let content_type = headers
+                    .get("content-type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+
+                if !has_csrf || !has_cookie || !content_type.starts_with("multipart/form-data") {
+                    return Response::builder()
+                        .status(StatusCode::UNPROCESSABLE_ENTITY)
+                        .body(Body::empty())
+                        .unwrap();
+                }
+
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(Body::from(r#"{"status":"success"}"#))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/api/endpoint",
+            routing::get(|request: Request<Body>| async move {
+                // Echo back any custom headers we received
+                let mut response = Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json");
+
+                // Forward all received headers
+                for (key, value) in request.headers() {
+                    if !key.as_str().to_lowercase().starts_with("x-") && key.as_str() != "host" {
+                        response = response.header(key, value);
+                    }
+                }
+
+                response.body(Body::from(r#"{"status":"ok"}"#)).unwrap()
+            }),
+        )
+        .route(
+            "/test",
+            routing::post(|request: Request<Body>| async move {
+                let headers = request.headers().clone();
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("X-Received-CSRF", headers.get("X-CSRF-Token").unwrap())
+                    .header("X-Received-Cookie", headers.get("Cookie").unwrap())
+                    .header("X-Received-Origin", headers.get("Origin").unwrap())
+                    .header("X-Received-Auth", headers.get("Authorization").unwrap())
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .fallback(|uri: axum::http::Uri| async move {
+            debug!("Handling fallback request: {}", uri);
+            let path = uri.path();
+            debug!(?path, "Handling request path");
+
+            let (content, content_type) = if path.ends_with(".js") {
+                (
+                    format!("console.log('JS file: {}');", path),
+                    "application/javascript",
+                )
+            } else if path.ends_with(".css") {
+                (
+                    format!("/* CSS file: {} */\nbody {{ color: blue; }}", path),
+                    "text/css",
+                )
+            } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+                ("JPEG content".to_string(), "image/jpeg")
+            } else if path.ends_with(".png") {
+                ("PNG content".to_string(), "image/png")
+            } else if path.ends_with(".svg") {
+                ("<svg>...</svg>".to_string(), "image/svg+xml")
+            } else if path.ends_with(".woff2") {
+                ("font data".to_string(), "font/woff2")
+            } else if path.ends_with(".woff") {
+                ("font data".to_string(), "font/woff")
+            } else {
+                (format!("Content for: {}", path), "text/plain")
+            };
+
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", content_type)
+                .header("Content-Length", content.len().to_string())
+                .body(Body::from(content))
+                .unwrap()
+        });
+
+    spawn_backend_server(app).await
+}
+
+// Helper function to run a test request
+pub async fn run_test_request(mut test_req: TestRequest) {
+    let backend_url = spawn_simulated_backend_server().await;
+    let app = create_test_app(RedirectConfig::default());
+    let test_req = test_req.prepare(backend_url);
+    let mut response = test_req.make_request(app).await;
+
+    debug!(?response, "Response");
+
+    // Check status
+    assert_eq!(response.status, test_req.expected_status);
+
+    // Check headers
+    for (key, value) in test_req.expected_headers.iter() {
+        response.assert_header(key, value);
+    }
+
+    // Check body if specified
+    if let Some(expected_body_contains) = test_req.expected_body_contains {
+        response.assert_body_contains(expected_body_contains).await;
+    }
 }

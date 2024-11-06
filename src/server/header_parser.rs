@@ -9,6 +9,7 @@ pub trait HeaderParser {
     where
         T::Err: std::error::Error + Send + Sync + 'static;
 
+    #[allow(unused)]
     fn parse_optional_header<T: std::str::FromStr>(&self, key: &str) -> Option<T>
     where
         T::Err: std::error::Error;

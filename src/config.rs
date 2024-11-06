@@ -1,6 +1,6 @@
 // src/config.rs
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use crate::error::RedirectorResult;
 
@@ -35,6 +35,7 @@ pub struct RedisConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RedirectConfig {
     #[serde(default = "default_max_redirects")]
     pub max_redirects: u32,
@@ -48,6 +49,17 @@ pub struct RedirectConfig {
     pub pass_through_header: String,
     #[serde(default = "default_stop_on_contains")]
     pub stop_on_contains: Vec<String>,
+    #[serde(default)]
+    pub strip_asset_paths: HashSet<String>, // e.g. ["collegeGreen", "webConfig"]
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetPathMapping {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub extensions: Vec<String>,
 }
 
 impl Default for RedirectConfig {
@@ -59,6 +71,7 @@ impl Default for RedirectConfig {
             allow_location_header: default_allow_location_header(),
             pass_through_header: default_pass_through_header(),
             stop_on_contains: default_stop_on_contains(),
+            strip_asset_paths: HashSet::new(),
         }
     }
 }

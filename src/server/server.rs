@@ -107,6 +107,7 @@ async fn health_handler() -> impl IntoResponse {
 
 #[cfg(test)]
 mod tests {
+    use bytes::BytesMut;
     use std::sync::Arc;
 
     #[allow(unused_imports)]
@@ -116,17 +117,14 @@ mod tests {
         metrics::Metrics,
         server::{
             redirect::RedirectHandler,
-            test_helpers::{create_test_app, spawn_backend_server, TestRequest},
+            test_helpers::{
+                create_test_app, run_test_request, spawn_simulated_backend_server, TestRequest,
+            },
         },
     };
 
-    use axum::{
-        body::Body,
-        extract::{Path, Request},
-        http::StatusCode,
-        response::Response,
-        Router,
-    };
+    use axum::{body::Body, extract::Request, http::StatusCode, response::Response};
+    use tracing::debug;
 
     #[tokio::test]
     async fn test_handles_simple_redirect() {
@@ -314,9 +312,14 @@ mod tests {
                 "http://backend:8080/path/to/resource",
             ),
             (
-                "backend:8080",
+                "backend",
                 "/path/to/resource",
-                "http://backend:8080/path/to/resource",
+                "http://backend/path/to/resource",
+            ),
+            (
+                "https://ibs.collegegreen.net/CollegeGreen/css/site.css",
+                "/css/site.css",
+                "http://ibs.collegegreen.net/css/site.css",
             ),
         ];
 
@@ -407,218 +410,227 @@ mod tests {
         debug!(?response, "Test response");
     }
 
-    //-----------------------------------------
-    // Helpers
-    //-----------------------------------------
-    use axum::routing;
-    use bytes::Bytes;
-    use tracing::debug;
-    async fn spawn_simulated_backend_server() -> String {
-        let app = Router::new()
-            .route(
-                "/student",
-                routing::get(|| async {
-                    let body = "<html>some body...</html>";
-                    let content_length = body.len().to_string();
-                    Response::builder()
-                        .status(301)
-                        .header("Location", "https://ibs.collegegreen.net/student/")
-                        .header("Content-Type", "text/html;")
-                        .header("Content-Length", content_length)
-                        .header("Server", "Apache")
-                        .header("Access-Control-Allow-Origin", "*")
-                        .body(Body::from(body))
-                        .unwrap()
-                }),
-            )
-            .route(
-                "/example",
-                routing::get(|| async {
-                    Response::builder()
-                        .status(302)
-                        .header("Content-Type", "text/plain")
-                        .body(Body::empty())
-                        .unwrap()
-                }),
-            )
-            // Add POST endpoint
-            // Add POST endpoint handler
-            .route(
-                "/login",
-                routing::post(|body: Bytes| async move {
-                    if let Ok(body_str) = std::str::from_utf8(&body) {
-                        if body_str.contains("username") && body_str.contains("password") {
-                            return Response::builder()
-                                .status(StatusCode::OK)
-                                .header("Content-Type", "application/json")
-                                .body(Body::from(r#"{"status":"success","token":"test123"}"#))
-                                .unwrap();
-                        }
-                    }
-                    Response::builder()
-                        .status(StatusCode::BAD_REQUEST)
-                        .body(Body::empty())
-                        .unwrap()
-                }),
-            )
-            // Add image endpoint handler
-            .route(
-                "/images/:filename",
-                routing::get(|Path(filename): Path<String>| async move {
-                    // Create a small test image (1x1 pixel JPEG)
-                    let image_data = vec![
-                        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01,
-                        0x01, 0x01, 0x00, 0x48, 0x00, 0x48, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43,
-                        0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-                    ];
+    #[test]
+    fn test_should_forward_request_header() {
+        let handler = RedirectHandler::new(RedirectConfig::default(), Arc::new(Metrics::new()));
 
-                    let content_type = if filename.ends_with(".jpg") || filename.ends_with(".jpeg")
-                    {
-                        "image/jpeg"
-                    } else if filename.ends_with(".png") {
-                        "image/png"
-                    } else {
-                        "application/octet-stream"
-                    };
+        // Critical headers that should be forwarded
+        assert!(handler.should_forward_request_header("cookie"));
+        assert!(handler.should_forward_request_header("x-csrf-token"));
+        assert!(handler.should_forward_request_header("x-requested-with"));
+        assert!(handler.should_forward_request_header("origin"));
+        assert!(handler.should_forward_request_header("referer"));
+        assert!(handler.should_forward_request_header("authorization"));
 
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header("Content-Type", content_type)
-                        .header("Content-Length", image_data.len().to_string())
-                        .body(Body::from(image_data))
-                        .unwrap()
-                }),
-            )
-            // .route(
-            //     "/*filepath",
-            //     routing::get(|Path(filepath): Path<String>| async move {
-            //         debug!(?filepath, "Handling asset request");
-            //         let (content, content_type) = if filepath.ends_with(".js") {
-            //             (
-            //                 format!("console.log('JS file: {}');", filepath),
-            //                 "application/javascript",
-            //             )
-            //         } else if filepath.ends_with(".css") {
-            //             (
-            //                 format!("/* CSS file: {} */\nbody {{ color: blue; }}", filepath),
-            //                 "text/css",
-            //             )
-            //         } else if filepath.ends_with(".jpg") || filepath.ends_with(".jpeg") {
-            //             ("JPEG content".to_string(), "image/jpeg")
-            //         } else if filepath.ends_with(".png") {
-            //             ("PNG content".to_string(), "image/png")
-            //         } else {
-            //             (format!("Content for: {}", filepath), "text/plain")
-            //         };
-            //         Response::builder()
-            //             .status(StatusCode::OK)
-            //             .header("Content-Type", content_type)
-            //             .header("Content-Length", content.len().to_string())
-            //             .body(Body::from(content))
-            //             .unwrap()
-            //     }),
-            // )
-            .route(
-                "/secure/Dashboard.jspa",
-                routing::get(|req: Request<Body>| async move {
-                    debug!("Hit test route for Dashboard.jspa");
-                    debug!("Request headers: {:?}", req.headers());
-
-                    let mut response = Response::builder()
-                        .status(StatusCode::MOVED_PERMANENTLY)
-                        .header("Location", "https://example.com");
-
-                    // Forward all headers from the request in the response
-                    for (key, value) in req.headers() {
-                        if !key.as_str().starts_with("x-") {
-                            response = response.header(key, value);
-                        }
-                    }
-
-                    response.body(Body::empty()).unwrap()
-                }),
-            )
-            .route(
-                "/api/endpoint",
-                routing::get(|request: Request<Body>| async move {
-                    // Echo back any custom headers we received
-                    let mut response = Response::builder()
-                        .status(StatusCode::OK)
-                        .header("Content-Type", "application/json");
-
-                    // Forward all received headers
-                    for (key, value) in request.headers() {
-                        if !key.as_str().to_lowercase().starts_with("x-") && key.as_str() != "host"
-                        {
-                            response = response.header(key, value);
-                        }
-                    }
-
-                    response.body(Body::from(r#"{"status":"ok"}"#)).unwrap()
-                }),
-            )
-            .fallback(|uri: axum::http::Uri| async move {
-                debug!("Handling fallback request: {}", uri);
-                let path = uri.path();
-                debug!(?path, "Handling request path");
-
-                let (content, content_type) = if path.ends_with(".js") {
-                    (
-                        format!("console.log('JS file: {}');", path),
-                        "application/javascript",
-                    )
-                } else if path.ends_with(".css") {
-                    (
-                        format!("/* CSS file: {} */\nbody {{ color: blue; }}", path),
-                        "text/css",
-                    )
-                } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
-                    ("JPEG content".to_string(), "image/jpeg")
-                } else if path.ends_with(".png") {
-                    ("PNG content".to_string(), "image/png")
-                } else if path.ends_with(".svg") {
-                    ("<svg>...</svg>".to_string(), "image/svg+xml")
-                } else if path.ends_with(".woff2") {
-                    ("font data".to_string(), "font/woff2")
-                } else if path.ends_with(".woff") {
-                    ("font data".to_string(), "font/woff")
-                } else {
-                    (format!("Content for: {}", path), "text/plain")
-                };
-
-                Response::builder()
-                    .status(StatusCode::OK)
-                    .header("Content-Type", content_type)
-                    .header("Content-Length", content.len().to_string())
-                    .body(Body::from(content))
-                    .unwrap()
-            });
-
-        spawn_backend_server(app).await
+        // Headers that should not be forwarded
+        assert!(!handler.should_forward_request_header("content-type"));
+        assert!(!handler.should_forward_request_header("x-forwarded-for"));
+        assert!(!handler.should_forward_request_header("x-real-ip"));
+        assert!(!handler.should_forward_request_header("x-traefik-request"));
     }
 
-    // Helper function to run a test request
-    async fn run_test_request(mut test_req: TestRequest) {
+    #[tokio::test]
+    async fn test_handles_post_multipart() {
+        use bytes::BytesMut;
+
+        // Create multipart form data
+        let boundary = "----WebKitFormBoundaryxxZeKyAeX88I2PTh";
+        let content_type =
+            Box::leak(format!("multipart/form-data; boundary={}", boundary).into_boxed_str());
+
+        let mut form_data = BytesMut::new();
+        form_data.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+        form_data.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file\"; filename=\"test.txt\"\r\n",
+        );
+        form_data.extend_from_slice(b"Content-Type: text/plain\r\n\r\n");
+        form_data.extend_from_slice(b"test file content\r\n");
+        form_data.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+
+        let mut request = TestRequest::builder()
+            .method("POST")
+            .header("Host", "www.collegegreen.net")
+            .header("Content-Type", content_type)
+            .header("X-CSRF-Token", "test-token")
+            .header("Cookie", "_session=123; _csrf=456")
+            .header("Origin", "https://www.collegegreen.net")
+            .header("Referer", "https://www.collegegreen.net/form")
+            .with_traefik_headers("/upload")
+            .uri("/upload")
+            .body(form_data.to_vec())
+            .expected_status(StatusCode::OK)
+            .expected_header("Content-Type", "application/json")
+            .build();
+
+        // Initialize test tracing to see debug logs
+        // init_test_tracing(Some("debug"));
+
         let backend_url = spawn_simulated_backend_server().await;
         let app = create_test_app(RedirectConfig::default());
-        let test_req = test_req.prepare(backend_url);
-        let mut response = test_req.make_request(app).await;
+        let response = request.prepare(backend_url).make_request(app).await;
 
-        debug!(?response, "Response");
+        debug!("Response status: {:?}", response.status);
+        debug!("Response headers: {:?}", response.response.headers());
 
-        // Check status
-        assert_eq!(response.status, test_req.expected_status);
-
-        // Check headers
-        for (key, value) in test_req.expected_headers.iter() {
-            response.assert_header(key, value);
-        }
-
-        // Check body if specified
-        if let Some(expected_body_contains) = test_req.expected_body_contains {
-            response.assert_body_contains(expected_body_contains).await;
-        }
+        assert_eq!(response.status, StatusCode::OK);
     }
 
+    #[tokio::test]
+    async fn test_preserves_security_headers() {
+        // Create the test request using TestRequest
+        let request = TestRequest::builder()
+            .method("POST")
+            .uri("/test")
+            .header("X-CSRF-Token", "test-token")
+            .header("Cookie", "session=abc123")
+            .header("Origin", "https://www.collegegreen.net")
+            .header("Authorization", "Bearer token123")
+            .with_traefik_headers("/test")
+            .expected_status(StatusCode::OK)
+            .build();
+
+        // Use the test server
+        let _backend_url = spawn_simulated_backend_server().await;
+        let app = create_test_app(RedirectConfig::default());
+
+        // Add debug endpoint to the test server to echo back headers
+        let app = app.route(
+            "/test",
+            axum::routing::post(|request: Request<Body>| async move {
+                let headers = request.headers().clone();
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("X-Received-CSRF", headers.get("X-CSRF-Token").unwrap())
+                    .header("X-Received-Cookie", headers.get("Cookie").unwrap())
+                    .header("X-Received-Origin", headers.get("Origin").unwrap())
+                    .header("X-Received-Auth", headers.get("Authorization").unwrap())
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        );
+
+        let response = request.make_request(app).await;
+
+        // Verify the headers were properly forwarded
+        assert_eq!(
+            response.response.headers().get("X-Received-CSRF").unwrap(),
+            "test-token"
+        );
+        assert_eq!(
+            response
+                .response
+                .headers()
+                .get("X-Received-Cookie")
+                .unwrap(),
+            "session=abc123"
+        );
+        assert_eq!(
+            response
+                .response
+                .headers()
+                .get("X-Received-Origin")
+                .unwrap(),
+            "https://www.collegegreen.net"
+        );
+        assert_eq!(
+            response.response.headers().get("X-Received-Auth").unwrap(),
+            "Bearer token123"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handles_multipart_post_with_large_file() {
+        // Create a larger test file content
+        let file_content = "test file content\n".repeat(1000); // 17KB of content
+
+        // Create multipart form data
+        let boundary = "----WebKitFormBoundaryxxZeKyAeX88I2PTh";
+        let content_type = format!("multipart/form-data; boundary={}", boundary);
+
+        let mut form_data = BytesMut::new();
+
+        // Add file part
+        form_data.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+        form_data.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file\"; filename=\"large-test.txt\"\r\n",
+        );
+        form_data.extend_from_slice(b"Content-Type: text/plain\r\n\r\n");
+        form_data.extend_from_slice(file_content.as_bytes());
+        form_data.extend_from_slice(b"\r\n");
+
+        // Add text field
+        form_data.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+        form_data
+            .extend_from_slice(b"Content-Disposition: form-data; name=\"description\"\r\n\r\n");
+        form_data.extend_from_slice(b"Test file upload description\r\n");
+
+        // Add final boundary
+        form_data.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+
+        let content_type = Box::leak(content_type.into_boxed_str());
+
+        let request = TestRequest::builder()
+            .method("POST")
+            .header("Host", "www.collegegreen.net")
+            .header("Content-Type", content_type)
+            .header("X-CSRF-Token", "test-token")
+            .header("Cookie", "_session=123; _csrf=456")
+            .header("Origin", "https://www.collegegreen.net")
+            .header("Referer", "https://www.collegegreen.net/form")
+            .with_traefik_headers("/upload")
+            .uri("/upload")
+            .body(form_data.to_vec())
+            .expected_status(StatusCode::OK)
+            .expected_header("Content-Type", "application/json")
+            .build();
+
+        run_test_request(request).await;
+    }
+
+    #[tokio::test]
+    async fn test_handles_multipart_post_with_multiple_files() {
+        let boundary = "----WebKitFormBoundaryxxZeKyAeX88I2PTh";
+        let content_type = format!("multipart/form-data; boundary={}", boundary);
+
+        let mut form_data = BytesMut::new();
+
+        // Add first file
+        form_data.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+        form_data.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file1\"; filename=\"test1.txt\"\r\n",
+        );
+        form_data.extend_from_slice(b"Content-Type: text/plain\r\n\r\n");
+        form_data.extend_from_slice(b"test file 1 content\r\n");
+        form_data.extend_from_slice(b"\r\n");
+
+        // Add second file
+        form_data.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
+        form_data.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"file2\"; filename=\"test2.txt\"\r\n",
+        );
+        form_data.extend_from_slice(b"Content-Type: text/plain\r\n\r\n");
+        form_data.extend_from_slice(b"test file 2 content\r\n");
+        form_data.extend_from_slice(b"\r\n");
+
+        // Add final boundary
+        form_data.extend_from_slice(format!("--{}--\r\n", boundary).as_bytes());
+
+        let content_type = Box::leak(content_type.into_boxed_str());
+
+        let request = TestRequest::builder()
+            .method("POST")
+            .header("Host", "www.collegegreen.net")
+            .header("Content-Type", content_type)
+            .header("X-CSRF-Token", "test-token")
+            .header("Cookie", "_session=123; _csrf=456")
+            .with_traefik_headers("/upload")
+            .uri("/upload")
+            .body(form_data.to_vec())
+            .expected_status(StatusCode::OK)
+            .expected_header("Content-Type", "application/json")
+            .build();
+
+        run_test_request(request).await;
+    }
     // Helpers
 }

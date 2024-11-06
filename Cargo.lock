@@ -1436,6 +1436,7 @@ dependencies = [
  "openssl",
  "openssl-sys",
  "prometheus",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
