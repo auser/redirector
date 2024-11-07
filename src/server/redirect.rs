@@ -709,7 +709,7 @@ mod tests {
         let config_yaml = r#"
         maxRedirects: 5
         matchHeader: "X-Traefik-Request"
-        passThrough_header: "X-Pass-Through"
+        pass_through_header: "X-Pass-Through"
         stopOnContains: []
         forwardHeaders: true
         stripAssetPaths:
