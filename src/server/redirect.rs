@@ -396,6 +396,12 @@ impl RedirectHandler {
         // Always forward content-type
         response = response.header(header::CONTENT_TYPE, content_type);
 
+        // Explicitly forward the Location header if it exists
+        if let Some(location) = headers.get(header::LOCATION) {
+            debug!(?location, "Forwarding Location header");
+            response = response.header(header::LOCATION, location);
+        }
+
         // Handle content-length and transfer-encoding
         let has_transfer_encoding = headers.contains_key(header::TRANSFER_ENCODING);
         if !has_transfer_encoding && status != StatusCode::NOT_MODIFIED {
@@ -754,6 +760,186 @@ mod tests {
                 "Failed for path '{}'. Expected {}, got {}",
                 input_path, expected, result
             );
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::server::test_helpers::{
+            create_test_app, spawn_backend_server, spawn_simulated_backend_server, TestRequest,
+        };
+        use axum::{http::HeaderValue, Router};
+
+        #[tokio::test]
+        async fn test_handles_redirect_with_location() {
+            let mut request = TestRequest::builder()
+                .method("GET")
+                .header("Host", "www.collegegreen.net")
+                .header("X-CSRF-Token", "test-token")
+                .header("Cookie", "_session=123")
+                .with_traefik_headers("/premier-pay-tools/dashboard")
+                .uri("/premier-pay-tools/dashboard")
+                .expected_status(StatusCode::MOVED_PERMANENTLY)
+                .expected_header("Location", "https://example.com/dashboard")
+                .build();
+
+            let backend_url = spawn_simulated_backend_server().await;
+            let app = create_test_app(RedirectConfig::default());
+            let test_req = request.prepare(backend_url);
+            let response = test_req.make_request(app).await;
+
+            // Assert redirect status
+            assert_eq!(response.status, StatusCode::MOVED_PERMANENTLY);
+
+            // Assert Location header exists and has correct value
+            let location = response
+                .response
+                .headers()
+                .get("Location")
+                .expect("Location header missing");
+            assert_eq!(
+                location,
+                &HeaderValue::from_static("https://example.com/dashboard")
+            );
+        }
+
+        #[tokio::test]
+        async fn test_handles_multiple_redirect_chain() {
+            // Create first redirect response
+            let mut request = TestRequest::builder()
+                .method("GET")
+                .header("Host", "www.collegegreen.net")
+                .header("X-CSRF-Token", "test-token")
+                .header("Cookie", "_session=123")
+                .with_traefik_headers("/premier-pay-tools/dashboard")
+                .uri("/premier-pay-tools/dashboard")
+                .expected_status(StatusCode::MOVED_PERMANENTLY)
+                .expected_header("Location", "https://intermediate.com")
+                .build();
+
+            let backend_app = Router::new()
+                .route(
+                    "/premier-pay-tools/dashboard",
+                    axum::routing::get(|| async {
+                        Response::builder()
+                            .status(StatusCode::MOVED_PERMANENTLY)
+                            .header("Location", "https://intermediate.com")
+                            .header("Content-Type", "text/html")
+                            .body(Body::from("Redirecting..."))
+                            .unwrap()
+                    }),
+                )
+                .fallback(axum::routing::any(|uri: axum::http::Uri| async move {
+                    debug!("Handling fallback request: {}", uri);
+                    Response::builder()
+                        .status(StatusCode::MOVED_PERMANENTLY)
+                        .header("Location", "https://final-destination.com")
+                        .header("Content-Type", "text/html")
+                        .body(Body::from("Redirecting again..."))
+                        .unwrap()
+                }));
+
+            let backend_url = spawn_backend_server(backend_app).await;
+            debug!("Test backend URL: {}", backend_url);
+
+            // Run the test and verify the first redirect
+            let app = create_test_app(RedirectConfig::default());
+            let test_req = request.prepare(backend_url);
+            let response = test_req.make_request(app).await;
+
+            assert_eq!(response.status, StatusCode::MOVED_PERMANENTLY);
+            assert_eq!(
+                response.response.headers().get("Location"),
+                Some(&HeaderValue::from_static("https://intermediate.com"))
+            );
+
+            // The redirector should not follow redirects - that's the browser's job
+            // We just verify we got the first redirect properly
+        }
+
+        #[tokio::test]
+        async fn test_handles_relative_location() {
+            let mut request = TestRequest::builder()
+                .method("GET")
+                .header("Host", "www.collegegreen.net")
+                .with_traefik_headers("/some/path")
+                .uri("/some/path")
+                .expected_status(StatusCode::MOVED_PERMANENTLY)
+                .expected_header("Location", "/new/path")
+                .build();
+
+            // Update the simulated backend to test relative redirects
+            let app = Router::new().route(
+                "/some/path",
+                axum::routing::get(|| async {
+                    Response::builder()
+                        .status(StatusCode::MOVED_PERMANENTLY)
+                        .header("Location", "/new/path")
+                        .body(Body::empty())
+                        .unwrap()
+                }),
+            );
+
+            let backend_url = spawn_backend_server(app).await;
+            let app = create_test_app(RedirectConfig::default());
+            let test_req = request.prepare(backend_url);
+            let response = test_req.make_request(app).await;
+
+            assert_eq!(response.status, StatusCode::MOVED_PERMANENTLY);
+            assert_eq!(
+                response.response.headers().get("Location"),
+                Some(&HeaderValue::from_static("/new/path"))
+            );
+        }
+
+        #[tokio::test]
+        async fn test_preserves_redirect_status_codes() {
+            let status_codes = vec![
+                StatusCode::MOVED_PERMANENTLY,  // 301
+                StatusCode::FOUND,              // 302
+                StatusCode::SEE_OTHER,          // 303
+                StatusCode::TEMPORARY_REDIRECT, // 307
+                StatusCode::PERMANENT_REDIRECT, // 308
+            ];
+
+            for status in status_codes {
+                let mut request = TestRequest::builder()
+                    .method("GET")
+                    .header("Host", "www.collegegreen.net")
+                    .with_traefik_headers("/redirect")
+                    .uri("/redirect")
+                    .expected_status(status)
+                    .expected_header("Location", "https://example.com")
+                    .build();
+
+                // Create a route that returns the test status code
+                let app = Router::new().route(
+                    "/redirect",
+                    axum::routing::get(move || async move {
+                        Response::builder()
+                            .status(status)
+                            .header("Location", "https://example.com")
+                            .body(Body::empty())
+                            .unwrap()
+                    }),
+                );
+
+                let backend_url = spawn_backend_server(app).await;
+                let app = create_test_app(RedirectConfig::default());
+                let test_req = request.prepare(backend_url);
+                let response = test_req.make_request(app).await;
+
+                assert_eq!(
+                    response.status, status,
+                    "Failed to preserve status code {}",
+                    status
+                );
+                assert_eq!(
+                    response.response.headers().get("Location"),
+                    Some(&HeaderValue::from_static("https://example.com"))
+                );
+            }
         }
     }
 }

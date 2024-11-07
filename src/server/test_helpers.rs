@@ -504,6 +504,16 @@ pub async fn spawn_simulated_backend_server() -> String {
             }),
         )
         .route(
+            "/premier-pay-tools/dashboard",
+            get(|| async {
+                Response::builder()
+                    .status(StatusCode::MOVED_PERMANENTLY)
+                    .header("Location", "https://example.com/dashboard")
+                    .body(Body::empty())
+                    .unwrap()
+            }),
+        )
+        .route(
             "/test",
             routing::post(|request: Request<Body>| async move {
                 let headers = request.headers().clone();
