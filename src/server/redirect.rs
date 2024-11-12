@@ -762,9 +762,11 @@ mod tests {
     mod tests {
         use super::*;
         use crate::server::test_helpers::{
-            create_test_app, spawn_backend_server, spawn_simulated_backend_server, TestRequest,
+            create_test_app, run_test_request, spawn_backend_server,
+            spawn_simulated_backend_server, TestRequest,
         };
         use axum::{http::HeaderValue, Router};
+        use serde_json::json;
 
         #[tokio::test]
         async fn test_handles_redirect_with_location() {
@@ -935,6 +937,134 @@ mod tests {
                     Some(&HeaderValue::from_static("https://example.com"))
                 );
             }
+        }
+
+        #[tokio::test]
+        async fn test_json_body_handling() {
+            let test_json = json!({
+                "key": "value",
+                "number": 42
+            });
+
+            let request = TestRequest::builder()
+                .method("POST")
+                .uri("/api/test")
+                .with_traefik_headers("/api/test")
+                .json_body(test_json.clone())
+                .expected_status(StatusCode::OK)
+                .build();
+
+            run_test_request(request).await;
+        }
+
+        #[tokio::test]
+        async fn test_form_data_handling() {
+            let request = TestRequest::builder()
+                .method("POST")
+                .uri("/api/test")
+                .with_traefik_headers("/api/test")
+                .form_body("field1=value1&field2=value2")
+                .expected_status(StatusCode::OK)
+                .build();
+
+            run_test_request(request).await;
+        }
+
+        #[tokio::test]
+        async fn test_multipart_form_data_handling() {
+            let request = TestRequest::builder()
+                .method("POST")
+                .uri("/api/test")
+                .with_traefik_headers("/api/test")
+                .multipart_body(
+                    "test_boundary",
+                    vec![("field1", "value1"), ("field2", "value2")],
+                )
+                .expected_status(StatusCode::OK)
+                .build();
+
+            run_test_request(request).await;
+        }
+
+        #[tokio::test]
+        async fn test_empty_body_handling() {
+            let request = TestRequest::builder()
+                .method("POST")
+                .uri("/api/test")
+                .with_traefik_headers("/api/test")
+                .expected_status(StatusCode::OK)
+                .build();
+
+            run_test_request(request).await;
+        }
+
+        #[tokio::test]
+        async fn test_large_body_handling() {
+            let large_body = vec![b'x'; 1024 * 1024]; // 1MB of data
+
+            let request = TestRequest::builder()
+                .method("POST")
+                .uri("/api/test")
+                .with_traefik_headers("/api/test")
+                .header("Content-Type", "application/octet-stream")
+                .body(large_body)
+                .expected_status(StatusCode::OK)
+                .build();
+
+            run_test_request(request).await;
+        }
+
+        #[tokio::test]
+        async fn test_content_type_preservation() {
+            let content_types = vec![
+                "application/json",
+                "application/x-www-form-urlencoded",
+                "text/plain",
+                "application/octet-stream",
+            ];
+
+            for content_type in content_types {
+                let request = TestRequest::builder()
+                    .method("POST")
+                    .uri("/api/test")
+                    .with_traefik_headers("/api/test")
+                    .header("Content-Type", content_type)
+                    .body("test data".to_string())
+                    .expected_status(StatusCode::OK)
+                    .build();
+
+                run_test_request(request).await;
+            }
+        }
+
+        #[tokio::test]
+        async fn test_login_with_credentials() {
+            let request = TestRequest::builder()
+                .method("POST")
+                .uri("/login")
+                .with_traefik_headers("/login")
+                .form_body("username=testuser&password=testpass")
+                .expected_status(StatusCode::OK)
+                .expected_body_contains(r#""status":"success""#)
+                .build();
+
+            run_test_request(request).await;
+        }
+
+        #[tokio::test]
+        async fn test_upload_with_headers() {
+            let request = TestRequest::builder()
+                .method("POST")
+                .uri("/upload")
+                .with_traefik_headers("/upload")
+                .header("X-CSRF-Token", "test-token")
+                .header("Cookie", "session=123")
+                .multipart_body("upload_boundary", vec![("file", "test content")])
+                .expected_status(StatusCode::OK)
+                .expected_body_contains(r#""status":"success""#)
+                .build();
+
+            run_test_request(request).await;
         }
     }
 }

@@ -277,6 +277,36 @@ impl TestRequestBuilder {
         self
     }
 
+    pub fn json_body(self, json: Value) -> Self {
+        self.header("Content-Type", "application/json")
+            .body(serde_json::to_vec(&json).unwrap())
+    }
+
+    pub fn form_body(self, form_data: &'static str) -> Self {
+        self.header("Content-Type", "application/x-www-form-urlencoded")
+            .body(form_data.to_string())
+    }
+
+    pub fn multipart_body(
+        self,
+        boundary: &'static str,
+        parts: Vec<(&'static str, &'static str)>,
+    ) -> Self {
+        let mut body = String::new();
+        for (name, value) in parts {
+            body.push_str(&format!(
+                "--{}\r\nContent-Disposition: form-data; name=\"{}\"\r\n\r\n{}\r\n",
+                boundary, name, value
+            ));
+        }
+        body.push_str(&format!("--{}--\r\n", boundary));
+
+        let content_type =
+            Box::leak(format!("multipart/form-data; boundary={}", boundary).into_boxed_str());
+
+        self.header("Content-Type", content_type).body(body)
+    }
+
     pub fn build(self) -> TestRequest {
         TestRequest {
             headers: self.headers,
@@ -408,6 +438,22 @@ pub async fn spawn_simulated_backend_server() -> String {
                     .header("Content-Type", content_type)
                     .header("Content-Length", image_data.len().to_string())
                     .body(Body::from(image_data))
+                    .unwrap()
+            }),
+        )
+        .route(
+            "/api/test",
+            routing::post(|headers: HeaderMap, body: Bytes| async move {
+                // Echo back the request details
+                let content_type = headers
+                    .get("Content-Type")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("application/octet-stream");
+
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", content_type)
+                    .body(Body::from(body))
                     .unwrap()
             }),
         )
