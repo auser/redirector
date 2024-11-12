@@ -452,7 +452,7 @@ impl RedirectHandler {
         Ok(response)
     }
 
-    #[instrument(skip(self, resp))]
+    #[instrument(skip(self, resp, request))]
     async fn build_pass_through_response(
         &self,
         resp: reqwest::Response,
@@ -532,31 +532,26 @@ impl RedirectHandler {
 
         let mut backend_req = client.request(method.clone(), &backend_url);
 
-        // Handle request body for POST/PUT etc.
-        if method != reqwest::Method::GET && method != reqwest::Method::HEAD {
-            let content_type = headers
-                .get(header::CONTENT_TYPE)
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("");
-
-            let body = std::mem::replace(request.body_mut(), Body::empty());
-            let body_bytes = axum::body::to_bytes(body, usize::MAX).await.map_err(|e| {
+        // Extract and forward the request body
+        let body = std::mem::replace(request.body_mut(), Body::empty());
+        let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
                 error!(?e, "Failed to read request body");
-                Box::new(e) as Box<dyn std::error::Error + Send + Sync>
-            })?;
+                return Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Body::empty())?);
+            }
+        };
 
-            // For multipart form data, preserve the exact content-type with boundary
-            if content_type.starts_with("multipart/form-data") {
-                debug!(?content_type, "Forwarding multipart form data");
+        // Always set the body, but only set content-type for non-GET/HEAD requests
+        backend_req = backend_req.body(body_bytes.clone());
+
+        if method != reqwest::Method::GET && method != reqwest::Method::HEAD {
+            if let Some(content_type) = headers.get(header::CONTENT_TYPE) {
+                debug!(?content_type, "Forwarding content-type header");
                 backend_req = backend_req.header(header::CONTENT_TYPE, content_type);
             }
-
-            debug!(
-                content_type = ?content_type,
-                body_size = ?body_bytes.len(),
-                "Sending request body to backend"
-            );
-            backend_req = backend_req.body(body_bytes);
         }
 
         // Forward headers based on pass-through status
@@ -565,9 +560,9 @@ impl RedirectHandler {
             // For pass-through, forward all headers except internal traefik ones
             backend_req = headers.iter().fold(backend_req, |req, (key, value)| {
                 let header_name = key.as_str().to_lowercase();
-                if !header_name.starts_with("x-traefik") && // Only exclude traefik internal headers
-           header_name != self.config.match_header.to_lowercase() &&
-           header_name != self.config.pass_through_header.to_lowercase()
+                if !header_name.starts_with("x-traefik")
+                    && header_name != self.config.match_header.to_lowercase()
+                    && header_name != self.config.pass_through_header.to_lowercase()
                 {
                     debug!(
                         ?header_name,
