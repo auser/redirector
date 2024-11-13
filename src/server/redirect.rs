@@ -255,7 +255,6 @@ impl RedirectHandler {
     pub fn should_forward_request_header(&self, lowercased: &str) -> bool {
         // Important security and session headers that must be forwarded
         let critical_headers = [
-            "content-type",
             "cookie",
             "set-cookie",
             "x-csrf-token",
@@ -265,14 +264,33 @@ impl RedirectHandler {
             "authorization",
             "host",
             "cache-control",
+        ]; // Removed content-type from here
+
+        let blocked_prefixes = ["x-forwarded-", "x-real-ip", "if-", "x-traefik"];
+
+        // Specific blocked headers (exact matches)
+        let blocked_exact = [
+            "content-length",
+            "content-encoding",
+            "transfer-encoding",
+            "connection",
+            "content-type", // Added here because it's handled separately
         ];
 
-        let blocked_headers = ["x-forwarded-", "x-real-ip", "if-", "content-", "x-traefik"];
+        // First check if it's a critical header
+        if critical_headers.contains(&lowercased) {
+            return true;
+        }
 
-        let is_critical_header = critical_headers.contains(&lowercased);
-        let is_blocked_header = blocked_headers.iter().any(|h| lowercased.starts_with(h));
+        // Then check if it's explicitly blocked
+        if blocked_exact.contains(&lowercased) {
+            return false;
+        }
 
-        !is_blocked_header && is_critical_header
+        // Finally check blocked prefixes
+        !blocked_prefixes
+            .iter()
+            .any(|prefix| lowercased.starts_with(prefix))
     }
 
     #[instrument(skip(self, backend_req, headers))]
@@ -317,14 +335,16 @@ impl RedirectHandler {
 
     #[instrument(skip(self))]
     fn should_forward_response_header(&self, header_name: &str) -> bool {
-        !vec![
+        let blocked_headers = vec![
             header::CONTENT_LENGTH,
             header::TRANSFER_ENCODING,
             header::CONNECTION,
-            header::CONTENT_TYPE,
-        ]
-        .iter()
-        .any(|h| h.as_str().to_lowercase() == header_name.to_lowercase())
+        ]; // Removed CONTENT_TYPE from blocked list
+
+        !blocked_headers
+            .iter()
+            .any(|h| h.as_str().to_lowercase() == header_name.to_lowercase())
+            || header_name.to_lowercase() == "x-csrf-token"
     }
 
     #[instrument(skip(self, response, headers))]
@@ -371,17 +391,20 @@ impl RedirectHandler {
         let headers = resp.headers().clone();
         let request_headers = request.headers().clone();
 
-        let content_type = headers
-            .get(header::CONTENT_TYPE)
-            .cloned()
-            .unwrap_or_else(|| {
-                let path = request.uri().path().to_lowercase();
-                let extension = path.split('.').last().unwrap_or("");
-                let mime_type = CONTENT_TYPES
-                    .get(extension)
-                    .unwrap_or(&"application/octet-stream");
-                HeaderValue::from_static(mime_type)
-            });
+        let content_type = if let Some(extension) = request.uri().path().split('.').last() {
+            // Try to get content type from extension first
+            CONTENT_TYPES
+                .get(extension)
+                .map(|&mime| HeaderValue::from_static(mime))
+                .or_else(|| headers.get(header::CONTENT_TYPE).cloned())
+                .unwrap_or_else(|| HeaderValue::from_static("application/octet-stream"))
+        } else {
+            // Fall back to response header or default
+            headers
+                .get(header::CONTENT_TYPE)
+                .cloned()
+                .unwrap_or_else(|| HeaderValue::from_static("application/octet-stream"))
+        };
 
         // For 304 responses, we don't need to get the body
         let body = if status == StatusCode::NOT_MODIFIED {
@@ -465,16 +488,18 @@ impl RedirectHandler {
 
         let mut response = Response::builder().status(status);
 
-        // Forward all headers from backend response
-        for (key, value) in request_headers.iter().chain(headers.iter()) {
-            debug!(?key, ?value, "Forwarding response header in pass-through");
-            response = response.header(key, value);
-            if key.as_str().to_lowercase() == "set-cookie" {
-                debug!("Found Set-Cookie header: {:?}", value);
+        // Forward all headers from backend response and request headers
+        // except internal traefik ones
+        for (key, value) in headers.iter().chain(request_headers.iter()) {
+            let header_name = key.as_str().to_lowercase();
+            if !header_name.starts_with("x-traefik")
+                && header_name != self.config.match_header.to_lowercase()
+                && header_name != self.config.pass_through_header.to_lowercase()
+            {
+                debug!(?key, ?value, "Forwarding pass-through header");
+                response = response.header(key, value);
             }
         }
-
-        // Extra debug for cookie handling
 
         Ok(response.body(Body::from(body))?)
     }
@@ -643,11 +668,17 @@ mod tests {
     fn test_should_forward_request_header() {
         let handler = RedirectHandler::new(RedirectConfig::default(), Arc::new(Metrics::new()));
 
-        assert!(handler.should_forward_request_header("host"));
+        // Headers that should be forwarded
+        assert!(handler.should_forward_request_header("host")); // This should pass
+        assert!(!handler.should_forward_request_header("content-type")); // This should pass (content-type should NOT be forwarded)
+        assert!(!handler.should_forward_request_header("content-length")); // This should pass (content-length should NOT be forwarded)
+        assert!(!handler.should_forward_request_header("x-forwarded-for")); // This should pass (x-forwarded-* should NOT be forwarded)
 
-        assert!(!handler.should_forward_request_header("content-type"));
+        // Headers that should not be forwarded
         assert!(!handler.should_forward_request_header("content-length"));
+        assert!(!handler.should_forward_request_header("transfer-encoding"));
         assert!(!handler.should_forward_request_header("x-forwarded-for"));
+        assert!(!handler.should_forward_request_header("if-none-match"));
     }
 
     #[test]
