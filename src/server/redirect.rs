@@ -235,8 +235,13 @@ impl RedirectHandler {
 
     #[instrument(skip(self, headers))]
     fn is_traefik_request(&self, headers: &HeaderMap) -> bool {
+        let match_header = self
+            .config
+            .match_header
+            .replace("request_", "")
+            .to_lowercase();
         headers
-            .get(&self.config.match_header)
+            .get(&match_header)
             .and_then(|v| v.to_str().ok())
             .map(|v| v == "traefik")
             .unwrap_or(false)
