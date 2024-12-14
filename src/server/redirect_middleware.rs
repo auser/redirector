@@ -162,6 +162,8 @@ impl RedirectMiddleware {
             }
         };
 
+        info!(?traefik_data, "Traefik data");
+
         // Build backend URL
         let backend_url = if traefik_data.service_url.starts_with("http") {
             traefik_data.service_url

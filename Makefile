@@ -1,6 +1,9 @@
 IMAGE_TAG:=auser/redirector
 
-.PHONY: build_docker run_docker test_docker build_docker_multiarch
+.PHONY: build_docker run_docker test_docker build_docker_multiarch create_buildx_builder
+
+create_buildx_builder:
+	docker buildx create --name multiarch --use || true
 
 build_docker:
 	docker buildx build -t ${IMAGE_TAG} -f Dockerfile --load .
@@ -17,7 +20,7 @@ test_docker:
 	docker stop redirector_test
 	docker rm redirector_test
 
-build_docker_multiarch:
+build_docker_multiarch: create_buildx_builder
 	docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --target runtime \

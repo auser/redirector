@@ -239,8 +239,22 @@ impl RedirectHandler {
             .config
             .match_header
             .replace("request_", "")
+            .replace("downstream_", "")
             .to_lowercase();
-        headers
+
+        let remapped_headers = headers
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.as_str()
+                        .replace("request_", "")
+                        .replace("downstream_", "")
+                        .to_lowercase(),
+                    v.clone(),
+                )
+            })
+            .collect::<HashMap<String, HeaderValue>>();
+        remapped_headers
             .get(&match_header)
             .and_then(|v| v.to_str().ok())
             .map(|v| v == "traefik")
@@ -798,7 +812,7 @@ mod tests {
     mod tests {
         use super::*;
         use crate::server::test_helpers::{
-            create_test_app, run_test_request, spawn_backend_server,
+            create_test_app, headers_from_json, run_test_request, spawn_backend_server,
             spawn_simulated_backend_server, TestRequest,
         };
         use axum::{http::HeaderValue, Router};
@@ -835,6 +849,33 @@ mod tests {
                 location,
                 &HeaderValue::from_static("https://example.com/dashboard")
             );
+        }
+
+        #[tokio::test]
+        async fn test_handles_is_traefik_request_with_request_x_forwarded_server() {
+            let redirect_handler =
+                RedirectHandler::new(RedirectConfig::default(), Arc::new(Metrics::new()));
+
+            let headers = headers_from_json(json!({
+                "request_X-Forwarded-Server": "traefik",
+            }));
+
+            let is_traefik_request = redirect_handler.is_traefik_request(&headers);
+            assert!(is_traefik_request);
+
+            let headers = headers_from_json(json!({
+                "X-Forwarded-Server": "traefik",
+            }));
+
+            let is_traefik_request = redirect_handler.is_traefik_request(&headers);
+            assert!(is_traefik_request);
+
+            let headers = headers_from_json(json!({
+                "X-Forwarded-Server": "traefik",
+            }));
+
+            let is_traefik_request = redirect_handler.is_traefik_request(&headers);
+            assert!(is_traefik_request);
         }
 
         #[tokio::test]
