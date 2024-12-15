@@ -564,11 +564,7 @@ impl RedirectHandler {
         };
 
         let path = uri.path().to_string();
-        let query = request
-            .uri()
-            .query()
-            .map(|q| format!("?{}", q))
-            .unwrap_or_default();
+        let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
 
         let backend_url = self.construct_backend_url(&traefik_data, &format!("{}{}", path, query));
 
