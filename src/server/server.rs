@@ -120,6 +120,7 @@ mod tests {
             test_helpers::{
                 create_test_app, run_test_request, spawn_simulated_backend_server, TestRequest,
             },
+            traefik_data::TraefikData,
         },
     };
 
@@ -303,28 +304,67 @@ mod tests {
         let test_cases = vec![
             (
                 "http://backend:8080",
+                "backend",
+                Some(8080),
                 "/path/to/resource",
                 "http://backend:8080/path/to/resource",
             ),
             (
                 "http://backend:8080/",
+                "backend",
+                Some(8080),
                 "/path/to/resource",
                 "http://backend:8080/path/to/resource",
             ),
             (
                 "backend",
+                "backend",
+                Some(8080),
                 "/path/to/resource",
-                "http://backend/path/to/resource",
+                "http://backend:8080/path/to/resource",
             ),
             (
                 "https://ibs.collegegreen.net/CollegeGreen/css/site.css",
+                "ibs.collegegreen.net",
+                Some(8080),
                 "/css/site.css",
-                "http://ibs.collegegreen.net/css/site.css",
+                "http://ibs.collegegreen.net:8080/css/site.css",
+            ),
+            (
+                "https://ibs.collegegreen.net/CollegeGreen/css/site.css",
+                "ibs.collegegreen.net",
+                Some(443),
+                "/css/site.css",
+                "https://ibs.collegegreen.net/css/site.css",
+            ),
+            (
+                "https://ibs.collegegreen.net/CollegeGreen/css/site.css",
+                "ibs.collegegreen.net",
+                Some(443),
+                "/css/site.css",
+                "https://ibs.collegegreen.net/css/site.css",
+            ),
+            (
+                "http://redirector:3000",
+                "redirector",
+                Some(3000),
+                "/",
+                "http://redirector:3000/",
             ),
         ];
 
-        for (service_url, path, expected) in test_cases {
-            let url = handler.construct_backend_url(service_url, &service_url, path);
+        for (service_url, service_addr, port, path, expected) in test_cases {
+            let traefik_data = TraefikData {
+                service_url: service_url.to_string(),
+                service_addr: service_addr.to_string(),
+                request_path: Some(path.to_string()),
+                service_port: port,
+                origin_status: None,
+                location: None,
+                request_scheme: None,
+                request_host: None,
+            };
+            let url = handler.construct_backend_url(&traefik_data, &path);
             assert_eq!(url, expected);
         }
     }

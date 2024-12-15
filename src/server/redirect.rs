@@ -37,6 +37,7 @@ static CONTENT_TYPES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
     m
 });
 
+#[allow(unused)]
 #[derive(Debug, Eq, PartialEq)]
 struct ParsedUrl {
     scheme: String,
@@ -115,6 +116,7 @@ impl RedirectHandler {
             .expect("Failed to build HTTP client")
     }
 
+    #[allow(unused)]
     fn parse_url(base_url: &str) -> ParsedUrl {
         // First try to parse with scheme
         let with_scheme = if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
@@ -167,20 +169,35 @@ impl RedirectHandler {
         }
     }
 
-    pub fn construct_backend_url(
-        &self,
-        base_url: &str,
-        _fallback_addr: &str,
-        path: &str,
-    ) -> String {
-        let base_url = Self::parse_url(base_url);
+    pub fn construct_backend_url(&self, traefik_data: &TraefikData, path: &str) -> String {
+        info!(?traefik_data, "Traefik data");
+        info!(?traefik_data.service_url, "Service URL");
+        info!(?traefik_data.request_path, "Request path");
+        info!(?traefik_data.service_port, "Request port");
+
+        let mut backend_url = if traefik_data.service_port.is_some() {
+            match traefik_data.service_port {
+                Some(443) => format!("https://{}", traefik_data.service_addr),
+                Some(80) => format!("http://{}", traefik_data.service_addr),
+                Some(port) => format!("http://{}:{}", traefik_data.service_addr, port),
+                None => format!("http://{}", traefik_data.service_addr),
+            }
+        } else {
+            if traefik_data.service_url.starts_with("http") {
+                traefik_data.service_url.clone()
+            } else {
+                format!("http://{}", traefik_data.service_addr)
+            }
+        };
+
+        // let base_url = Self::parse_url(&backend_url);
         let path = path.trim();
 
         // Construct base URL
-        let mut backend_url = format!("{}://{}", base_url.scheme, base_url.host);
-        if let Some(port) = base_url.port {
-            backend_url = format!("{}:{}", backend_url, port);
-        }
+        // let mut backend_url = format!("{}://{}", base_url.scheme, base_url.host);
+        // if let Some(port) = base_url.port {
+        //     backend_url = format!("{}:{}", backend_url, port);
+        // }
 
         // Remove trailing slashes from base URL
         while backend_url.ends_with('/') {
@@ -560,11 +577,7 @@ impl RedirectHandler {
             .map(|q| format!("?{}", q))
             .unwrap_or_default();
 
-        let backend_url = self.construct_backend_url(
-            &traefik_data.service_url,
-            &traefik_data.service_addr,
-            &format!("{}{}", path, query),
-        );
+        let backend_url = self.construct_backend_url(&traefik_data, &format!("{}{}", path, query));
 
         info!(?backend_url, "Making backend request");
 
@@ -775,31 +788,57 @@ mod tests {
             // Strip collegeGreen from CSS path
             (
                 "http://example.com",
+                "example.com",
+                Some(8080),
                 "/collegeGreen/css/site.css",
-                "http://example.com/css/site.css",
+                "http://example.com:8080/css/site.css",
             ),
             // Strip webConfig from JS path
             (
                 "http://example.com",
+                "example.com",
+                Some(80),
                 "/webConfig/js/main.js",
                 "http://example.com/js/main.js",
             ),
             // Don't modify HTML files
             (
                 "http://example.com",
+                "example.com",
+                None,
                 "/collegeGreen/page.html",
                 "http://example.com/collegeGreen/page.html",
             ),
             // Handle nested paths
             (
                 "http://example.com",
+                "example.com",
+                None,
                 "/collegeGreen/deep/path/style.css",
                 "http://example.com/deep/path/style.css",
             ),
+            // 2024-12-15T04:05:31.426245Z DEBUG request{method=GET uri=/ content_type=None}:handle_request{request_id=8f983260-65cf-4289-b5fb-11b6590395fa}: redirector::server::redirect: Successfully parsed Traefik data data=TraefikData { service_addr: "http://redirector:3000", service_url: "http://redirector:3000", service_port: Some(3000), origin_status: None, location: None, request_path: None, request_scheme: None, request_host: Some("redirector:3000") }
+            (
+                "http://redirector:3000",
+                "redirector",
+                Some(3000),
+                "/",
+                "http://redirector:3000/",
+            ),
         ];
 
-        for (base_url, input_path, expected) in test_cases {
-            let result = handler.construct_backend_url(base_url, "", input_path);
+        for (base_url, service_addr, port, input_path, expected) in test_cases {
+            let traefik_data = TraefikData {
+                service_url: base_url.to_string(),
+                service_addr: service_addr.to_string(),
+                request_path: Some(input_path.to_string()),
+                service_port: port,
+                origin_status: None,
+                location: None,
+                request_scheme: None,
+                request_host: None,
+            };
+            let result = handler.construct_backend_url(&traefik_data, &input_path);
             assert_eq!(
                 result, expected,
                 "Failed for path '{}'. Expected {}, got {}",
@@ -1139,6 +1178,25 @@ mod tests {
                 .multipart_body("upload_boundary", vec![("file", "test content")])
                 .expected_status(StatusCode::OK)
                 .expected_body_contains(r#""status":"success""#)
+                .build();
+
+            run_test_request(request).await;
+        }
+
+        #[tokio::test]
+        async fn test_with_traefik_headers_with_port() {
+            let request = TestRequest::builder()
+                .method("GET")
+                .uri("/")
+                .with_traefik_headers("/")
+                .header("ClientAddr", "192.168.131.1:21547")
+                .header("ClientHost", "192.168.131.1")
+                .header("ClientPort", "21547")
+                .header("request_Serviceaddr", "http://redirector:3000")
+                .header("request_Serviceport", "3000")
+                .header("request_Serviceurl", "http://redirector:3000")
+                .header("RequestHost", "redirector")
+                .expected_status(StatusCode::OK)
                 .build();
 
             run_test_request(request).await;

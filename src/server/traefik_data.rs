@@ -6,6 +6,7 @@ use serde::Deserialize;
 pub struct TraefikData {
     pub service_addr: String,
     pub service_url: String,
+    pub service_port: Option<u16>,
     pub origin_status: Option<u16>,
     #[serde(rename = "origin_Location")]
     pub location: Option<String>,
@@ -81,6 +82,10 @@ impl TryFrom<&HeaderMap> for TraefikData {
             .and_then(|v| v.to_str().ok())
             .map(String::from);
 
+        let service_port = get_header(headers, "serviceport")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok());
+
         Ok(Self {
             service_addr,
             service_url,
@@ -89,6 +94,7 @@ impl TryFrom<&HeaderMap> for TraefikData {
             request_path,
             request_scheme,
             request_host,
+            service_port,
         })
     }
 }
@@ -126,6 +132,7 @@ mod tests {
                     request_path: Some("/test".to_string()),
                     request_scheme: Some("https".to_string()),
                     request_host: Some("example.com".to_string()),
+                    service_port: Some(8080),
                 },
             ),
             // Case 2: Minimal headers with lowercase
@@ -139,6 +146,7 @@ mod tests {
                     request_path: None,
                     request_scheme: None,
                     request_host: Some("example.com".to_string()),
+                    service_port: None,
                 },
             ),
             // Case 3: ServiceAddr but no ServiceUrl
@@ -156,6 +164,7 @@ mod tests {
                     request_path: None,
                     request_scheme: None,
                     request_host: Some("example.com".to_string()),
+                    service_port: None,
                 },
             ),
             // Case 4: Headers with different cases
@@ -173,6 +182,45 @@ mod tests {
                     request_path: None,
                     request_scheme: None,
                     request_host: Some("example.com".to_string()),
+                    service_port: None,
+                },
+            ),
+            // Case 5: Request port is 443
+            (
+                vec![
+                    ("host", "example.com"),
+                    ("serviceaddr", "backend"),
+                    ("serviceport", "443"),
+                    ("x-forwarded-proto", "https"),
+                ],
+                TraefikData {
+                    service_addr: "backend".to_string(),
+                    service_url: "https://backend".to_string(),
+                    origin_status: None,
+                    location: None,
+                    request_path: None,
+                    request_scheme: None,
+                    request_host: Some("example.com".to_string()),
+                    service_port: Some(443),
+                },
+            ),
+            // Case 6: Request port is 80
+            (
+                vec![
+                    ("host", "example.com"),
+                    ("serviceaddr", "backend:8080"),
+                    ("serviceport", "80"),
+                    ("x-forwarded-proto", "http"),
+                ],
+                TraefikData {
+                    service_addr: "backend:8080".to_string(),
+                    service_url: "http://backend:8080".to_string(),
+                    origin_status: None,
+                    location: None,
+                    request_path: None,
+                    request_scheme: None,
+                    request_host: Some("example.com".to_string()),
+                    service_port: Some(80),
                 },
             ),
         ];
