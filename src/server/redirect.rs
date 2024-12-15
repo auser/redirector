@@ -190,15 +190,6 @@ impl RedirectHandler {
             }
         };
 
-        // let base_url = Self::parse_url(&backend_url);
-        let path = path.trim();
-
-        // Construct base URL
-        // let mut backend_url = format!("{}://{}", base_url.scheme, base_url.host);
-        // if let Some(port) = base_url.port {
-        //     backend_url = format!("{}:{}", backend_url, port);
-        // }
-
         // Remove trailing slashes from base URL
         while backend_url.ends_with('/') {
             backend_url.pop();
@@ -222,7 +213,8 @@ impl RedirectHandler {
 
         // Non-asset path handling
         let path = path.trim_start_matches('/');
-        format!("{}/{}", backend_url, path)
+        let backend_url = format!("{}/{}", backend_url, path);
+        backend_url
     }
 
     fn normalize_asset_path(&self, path: &str) -> String {

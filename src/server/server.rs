@@ -338,11 +338,11 @@ mod tests {
                 "https://ibs.collegegreen.net/css/site.css",
             ),
             (
-                "https://ibs.collegegreen.net/CollegeGreen/css/site.css",
-                "ibs.collegegreen.net",
+                "https://ibs2.collegegreen.net/CollegeGreen/css/site.css",
+                "ibs2.collegegreen.net",
                 Some(443),
                 "/css/site.css",
-                "https://ibs.collegegreen.net/css/site.css",
+                "https://ibs2.collegegreen.net/css/site.css",
             ),
             (
                 "http://redirector:3000",
