@@ -292,6 +292,7 @@ impl RedirectHandler {
             "authorization",
             "host",
             "cache-control",
+            "x-forwarded-server",
         ]; // Removed content-type from here
 
         let blocked_prefixes = ["x-forwarded-", "x-real-ip", "if-", "x-traefik"];
