@@ -1,10 +1,10 @@
 use crate::{config::RedirectConfig, metrics::Metrics, server::traefik_data::TraefikData};
 use axum::{
     body::{Body, HttpBody},
-    http::{header, HeaderMap, HeaderValue, Request, Response, StatusCode},
+    http::{header, uri::Uri, HeaderMap, HeaderValue, Request, Response, StatusCode},
 };
 use once_cell::sync::Lazy;
-use reqwest::{Client, Url};
+use reqwest::Client;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -43,6 +43,7 @@ struct ParsedUrl {
     scheme: String,
     host: String,
     port: Option<u16>,
+    query: Option<String>,
 }
 
 #[derive(Clone)]
@@ -125,7 +126,7 @@ impl RedirectHandler {
             base_url.to_string()
         };
 
-        match Url::parse(&with_scheme) {
+        match with_scheme.parse::<Uri>() {
             Ok(url) => {
                 let scheme = if cfg!(test) {
                     "http".to_string()
@@ -133,10 +134,15 @@ impl RedirectHandler {
                     "https".to_string()
                 };
 
+                let host = url.host().unwrap_or(base_url).to_string();
+                let port = url.port().map(|p| p.into());
+                let query = url.query().map(|q| q.to_string());
+
                 ParsedUrl {
                     scheme,
-                    host: url.host_str().unwrap_or(base_url).to_string(),
-                    port: url.port(),
+                    host,
+                    port,
+                    query,
                 }
             }
             Err(_) => {
@@ -151,6 +157,7 @@ impl RedirectHandler {
                             },
                             host: host.to_string(),
                             port: Some(port),
+                            query: None,
                         };
                     }
                 }
@@ -164,6 +171,7 @@ impl RedirectHandler {
                     },
                     host: base_url.to_string(),
                     port: None,
+                    query: None,
                 }
             }
         }
@@ -190,6 +198,9 @@ impl RedirectHandler {
             }
         };
 
+        let parsed_backend_url = RedirectHandler::parse_url(&backend_url);
+        debug!(?parsed_backend_url, "Parsed backend URL");
+
         // Remove trailing slashes from base URL
         while backend_url.ends_with('/') {
             backend_url.pop();
@@ -213,7 +224,11 @@ impl RedirectHandler {
 
         // Non-asset path handling
         let path = path.trim_start_matches('/');
-        let backend_url = format!("{}/{}", backend_url, path);
+        let mut backend_url = format!("{}/{}", backend_url, path);
+        if let Some(query) = parsed_backend_url.query {
+            backend_url = format!("{}?{}", backend_url, query);
+        }
+        info!(?backend_url, "Finalized constructed backend URL");
         backend_url
     }
 
@@ -543,6 +558,8 @@ impl RedirectHandler {
         let method = request.method().clone();
         let uri = request.uri();
 
+        info!(?uri, "Received request");
+
         if !self.is_traefik_request(&headers) {
             warn!(?headers, "Request is not from traefik");
             return Ok(Response::builder()
@@ -565,6 +582,12 @@ impl RedirectHandler {
 
         let path = uri.path().to_string();
         let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+
+        info!(
+            ?path,
+            ?query,
+            "Constructing backend URL with path and query"
+        );
 
         let backend_url = self.construct_backend_url(&traefik_data, &format!("{}{}", path, query));
 
@@ -711,6 +734,7 @@ mod tests {
                     scheme: "http".to_string(),
                     host: "example.com".to_string(),
                     port: Some(8080),
+                    query: None,
                 },
             ),
             (
@@ -719,6 +743,7 @@ mod tests {
                     scheme: "http".to_string(),
                     host: "example.com".to_string(),
                     port: Some(8080),
+                    query: None,
                 },
             ),
             (
@@ -727,6 +752,7 @@ mod tests {
                     scheme: "http".to_string(),
                     host: "example.com".to_string(),
                     port: None,
+                    query: None,
                 },
             ),
             (
@@ -735,6 +761,7 @@ mod tests {
                     scheme: "http".to_string(),
                     host: "localhost".to_string(),
                     port: Some(3000),
+                    query: None,
                 },
             ),
             (
@@ -743,6 +770,16 @@ mod tests {
                     scheme: "http".to_string(),
                     host: "localhost".to_string(),
                     port: Some(3000),
+                    query: None,
+                },
+            ),
+            (
+                "http://localhost:3000?param1=value1&param2=value2",
+                ParsedUrl {
+                    scheme: "http".to_string(),
+                    host: "localhost".to_string(),
+                    port: Some(3000),
+                    query: Some("param1=value1&param2=value2".to_string()),
                 },
             ),
         ];
@@ -844,6 +881,7 @@ mod tests {
             spawn_simulated_backend_server, TestRequest,
         };
         use axum::{http::HeaderValue, Router};
+        use hyper::Uri;
         use serde_json::json;
 
         #[tokio::test]
@@ -1042,6 +1080,41 @@ mod tests {
                     Some(&HeaderValue::from_static("https://example.com"))
                 );
             }
+        }
+
+        #[tokio::test]
+        async fn test_handles_redirect_with_query_params() {
+            // crate::server::test_helpers::init_test_tracing(Some("DEBUG"));
+            let mut request = TestRequest::builder()
+                .method("GET")
+                .header("Host", "www.collegegreen.net")
+                .with_traefik_headers("/thing?param1=value1&param2=value2")
+                .uri("/thing?param1=value1&param2=value2")
+                .build();
+
+            // Create a route that returns the test status code
+            let app = Router::new().route(
+                "/thing",
+                axum::routing::get(move || async move {
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("Content-Type", "text/html")
+                        .body(Body::empty())
+                        .unwrap()
+                }),
+            );
+
+            let backend_url = spawn_backend_server(app).await;
+            let app = create_test_app(RedirectConfig::default());
+            let test_req = request.prepare(backend_url);
+            let response = test_req.make_request(app).await;
+
+            assert_eq!(
+                response.status,
+                StatusCode::OK,
+                "Failed to preserve status code {}",
+                StatusCode::OK
+            );
         }
 
         #[tokio::test]
